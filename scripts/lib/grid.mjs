@@ -2,20 +2,52 @@
 // the build scripts.
 
 import { readFileSync, existsSync } from 'node:fs';
+import { gunzipSync } from 'node:zlib';
 import { fileURLToPath } from 'node:url';
 import { join } from 'node:path';
+import { REGIONS } from './regions.mjs';
 
 export const ROOT = fileURLToPath(new URL('../../', import.meta.url));
 
+/** Land cells of a grid: [{idx, mask, country}], plus the mask metadata. */
 export function loadLandCells(res) {
-  const path = join(ROOT, 'data', `land-cells-${res}.json`);
-  if (!existsSync(path)) {
-    throw new Error(`Land mask ${path} not found. Create it with: npm run land-mask -- --res ${res}`);
+  const base = join(ROOT, 'data', `land-cells-${res}.json`);
+  const path = [base, `${base}.gz`].find(existsSync);
+  if (!path) {
+    throw new Error(`Land mask for ${res}° not found. Create it with: npm install && npm run land-mask -- --res ${res} [--region africa]`);
   }
-  const d = JSON.parse(readFileSync(path, 'utf8'));
+  const raw = readFileSync(path);
+  const d = JSON.parse((path.endsWith('.gz') ? gunzipSync(raw) : raw).toString('utf8'));
   const cells = [];
-  for (let i = 0; i < d.cells.length; i += 2) cells.push({ idx: d.cells[i], mask: d.cells[i + 1] });
+  for (let i = 0; i < d.cells.length; i += 3) cells.push({ idx: d.cells[i], mask: d.cells[i + 1], country: d.cells[i + 2] });
   return { ...d, cells };
+}
+
+/**
+ * Filter land cells by bounding box, region ("africa") and/or country names
+ * (comma-separated, Natural Earth spelling, case-insensitive).
+ */
+export function selectCells(land, { bbox, region, countries } = {}) {
+  let ids = null;
+  if (region) {
+    const r = REGIONS[region.toLowerCase()];
+    if (!r) throw new Error(`Unknown region "${region}" (supported: ${Object.keys(REGIONS).join(', ')})`);
+    ids = new Set(r);
+  }
+  if (countries) {
+    const byName = new Map(Object.entries(land.countries).map(([id, name]) => [name.toLowerCase(), Number(id)]));
+    const wanted = new Set();
+    for (const w of countries.split(',').map((x) => x.trim().toLowerCase()).filter(Boolean)) {
+      const id = byName.get(w) ?? (land.countries[w] ? Number(w) : undefined);
+      if (id === undefined) {
+        const close = [...byName.keys()].filter((n) => n.includes(w.slice(0, 4))).slice(0, 5);
+        throw new Error(`Country "${w}" is not in the ${land.resolution}° land mask.${close.length ? ` Did you mean: ${close.join(', ')}?` : ''}`);
+      }
+      wanted.add(id);
+    }
+    ids = ids ? new Set([...wanted].filter((x) => ids.has(x))) : wanted;
+  }
+  return land.cells.filter((c) => (!ids || ids.has(c.country)) && inBbox(cellCenter(c.idx, land.resolution, land.nx), bbox));
 }
 
 export function cellCenter(idx, res, nx) {

@@ -2,10 +2,11 @@
 
 import { DEFAULT_PARAMS, PARAM_INFO } from './model/losses.js';
 import { FIXED_GCRS, EW_GCRS, TRACKER_GCRS, TRACKER_LIMITS } from './model/configs.js';
-import { loadGrid, computeValues, cellAt } from './grid-data.js';
+import { loadDatasets, blockResults, cellStages, pickValue } from './grid-data.js';
 import { createHeatLayer } from './heat-layer.js';
 import { VARIABLES, buildLut, cssGradient, niceTicks, autoRange } from './colors.js';
 import { LocationCard, mountLabel } from './location.js';
+import { countryList, collectCells, summaryHtml, toCsv, download } from './screening.js';
 
 const L = window.L;
 const $ = (id) => document.getElementById(id);
@@ -212,37 +213,81 @@ map.createPane('heat');
 map.getPane('heat').style.zIndex = 350;
 map.getPane('heat').classList.add('heat-pane');
 const heat = createHeatLayer(L, { pane: 'heat', opacity: state.opacity }).addTo(map);
-map.on('moveend', writeHash);
+map.on('moveend', () => {
+  writeHash();
+  clearTimeout(moveTimer);
+  moveTimer = setTimeout(refreshMap, 150); // load blocks that came into view
+});
+let moveTimer = 0;
 
-let grid = null;
-let values = null;
+let datasets = []; // coarse -> fine
+let shown = []; // layers currently painted, fine -> coarse: {ds, results: Map(blockId -> results)}
 let range = [0, 1];
 let card = null;
 let marker = null;
 let seq = 0;
 
 async function refreshMap() {
-  if (!grid) return;
+  if (!datasets.length) return;
   const my = ++seq;
-  const loading = setTimeout(() => ($('loading').hidden = false), 150);
+  const loading = setTimeout(() => ($('loading').hidden = false), 200);
   try {
     const mount = currentMount();
-    const v = await computeValues(grid, mount, state.params, state.variable);
-    if (my !== seq) return;
-    values = v;
-    const meta = VARIABLES[state.variable];
-    range = state.scaleMode === 'auto' ? autoRange(values) : meta.range;
-    const lut = buildLut(meta.ramp);
-    const colors = new Uint32Array(grid.M);
-    const [lo, hi] = range;
-    for (let i = 0; i < grid.M; i++) {
-      const x = values[i];
-      if (Number.isFinite(x)) colors[i] = lut[Math.max(0, Math.min(255, Math.round(((x - lo) / (hi - lo)) * 255)))];
+    const zoom = map.getZoom();
+    const b = map.getBounds().pad(0.25);
+    const box = [Math.max(-90, b.getSouth()), b.getWest(), Math.min(90, b.getNorth()), b.getEast()];
+    const layers = [];
+    const lacking = [];
+    for (const ds of datasets) {
+      if (zoom < ds.minZoom) continue;
+      if (!ds.supports(mount)) {
+        lacking.push(ds.name);
+        continue;
+      }
+      const ids = ds.blockIdsIn(...box);
+      const parts = await Promise.all(
+        ids.map(async (id) => {
+          const block = await ds.block(id);
+          return { block, results: await blockResults(block, mount, state.params) };
+        })
+      );
+      if (my !== seq) return;
+      if (parts.length) layers.push({ ds, parts });
     }
-    const g = grid.manifest.grid;
+    if (my !== seq) return;
+
+    const meta = VARIABLES[state.variable];
+    for (const l of layers) {
+      for (const p of l.parts) {
+        p.values = new Float32Array(p.block.M);
+        for (let i = 0; i < p.block.M; i++) p.values[i] = pickValue(p.results, state.variable, i);
+      }
+    }
+    if (state.scaleMode === 'auto') {
+      const sample = [];
+      for (const l of layers) for (const p of l.parts) for (let i = 0; i < p.values.length; i += 7) sample.push(p.values[i]);
+      range = autoRange(sample);
+    } else range = meta.range;
+    const lut = buildLut(meta.ramp);
+    const [lo, hi] = range;
+    const heatLayers = [];
+    for (const l of [...layers].reverse()) {
+      const ds = l.ds;
+      const blocks = new Array(ds.nbx * ds.nby);
+      for (const p of l.parts) {
+        const colors = new Uint32Array(p.block.M);
+        for (let i = 0; i < p.block.M; i++) {
+          const x = p.values[i];
+          if (Number.isFinite(x)) colors[i] = lut[Math.max(0, Math.min(255, Math.round(((x - lo) / (hi - lo)) * 255)))];
+        }
+        blocks[p.block.br * ds.nbx + p.block.bc] = { row0: p.block.row0, col0: p.block.col0, local: p.block.local, colors, values: p.values };
+      }
+      heatLayers.push({ res: ds.res, nx: ds.nx, ny: ds.ny, cpb: ds.cpb, nbx: ds.nbx, blocks });
+    }
+    shown = [...layers].reverse().map((l) => ({ ds: l.ds, values: new Map(l.parts.map((p) => [p.block.id, p.values])) }));
     map.getPane('heat').classList.toggle('smooth', state.smooth);
-    heat.setData({ nx: g.nx, ny: g.ny, res: g.resolution, gridIndex: grid.gridIndex, colors, values, lut, lo, hi, smooth: state.smooth });
-    renderLegend(meta, mount);
+    heat.setData({ layers: heatLayers, lut, lo, hi, smooth: state.smooth });
+    renderLegend(meta, mount, layers.map((l) => l.ds), lacking);
   } catch (e) {
     console.error(e);
     showBanner(`Could not compute the map: ${e.message}`, true);
@@ -252,7 +297,7 @@ async function refreshMap() {
   }
 }
 
-function renderLegend(meta, mount) {
+function renderLegend(meta, mount, used, lacking) {
   $('legend').hidden = false;
   $('legend-title').textContent = `${meta.label} (${meta.unit})`;
   $('legend-bar').style.background = cssGradient(meta.ramp);
@@ -262,7 +307,9 @@ function renderLegend(meta, mount) {
     .map((t) => `<span style="left:${((t - lo) / (hi - lo)) * 100}%">${t.toLocaleString('en-US')}</span>`)
     .join('');
   const what = state.variable === 'ghi' ? 'Horizontal plane' : mountLabel(mount);
-  $('legend-note').textContent = `${what} · ${grid.manifest.grid.resolution}° grid${state.scaleMode === 'fixed' ? ' · values beyond the range are clamped' : ''}`;
+  const grids = used.length ? `${used.map((d) => d.name).reverse().join(' / ')} grid` : 'no grid data for this setting';
+  const miss = lacking.length ? ` · ${lacking.join(', ')} grid lacks this layout` : '';
+  $('legend-note').textContent = `${what} · ${grids}${miss}${state.scaleMode === 'fixed' ? ' · values beyond the range are clamped' : ''}`;
 }
 
 function showBanner(html, warn = false) {
@@ -272,23 +319,42 @@ function showBanner(html, warn = false) {
   b.hidden = false;
 }
 
-// Hover read-out.
+// Hover read-out from the finest grid shown at the cursor.
 let hoverFrame = 0;
 map.on('mousemove', (e) => {
-  if (!grid || !values) return;
+  if (!shown.length) return;
   cancelAnimationFrame(hoverFrame);
   hoverFrame = requestAnimationFrame(() => {
     const { lat, lng } = e.latlng;
     const lon = ((((lng + 180) % 360) + 360) % 360) - 180;
-    const pos = cellAt(grid, lat, lon);
     const chip = $('hover');
-    if (pos < 0 || !Number.isFinite(values[pos])) return (chip.hidden = true);
-    const meta = VARIABLES[state.variable];
-    chip.innerHTML = `<b>${values[pos].toLocaleString('en-US', { maximumFractionDigits: meta.digits })}</b> ${meta.unit} &nbsp;<span class="muted">${lat.toFixed(2)}°, ${lon.toFixed(2)}°</span>`;
-    chip.hidden = false;
+    for (const { ds, values } of shown) {
+      const hit = ds.lookup(lat, lon);
+      const v = hit && values.get(hit.block.id)?.[hit.pos];
+      if (!Number.isFinite(v)) continue;
+      const meta = VARIABLES[state.variable];
+      chip.innerHTML = `<b>${v.toLocaleString('en-US', { maximumFractionDigits: meta.digits })}</b> ${meta.unit} &nbsp;<span class="muted">${lat.toFixed(2)}°, ${lon.toFixed(2)}° · ${ds.name}</span>`;
+      chip.hidden = false;
+      return;
+    }
+    chip.hidden = true;
   });
 });
 map.on('mouseout', () => ($('hover').hidden = true));
+
+/** Precomputed values of the finest grid cell (holding this mounting) at a point. */
+async function gridCell(lat, lon, mount, params) {
+  for (const ds of [...datasets].reverse()) {
+    if (!ds.supports(mount)) continue;
+    const [id] = ds.blockIdsIn(lat, lon, lat, lon);
+    if (!id) continue;
+    await ds.block(id);
+    const hit = ds.lookup(lat, lon);
+    if (!hit) continue;
+    return { stages: await cellStages(hit.block, mount, params, hit.pos), res: ds.res, center: ds.cellCenter(hit.block, hit.pos) };
+  }
+  return null;
+}
 
 const pinIcon = L.divIcon({ className: 'pin', html: '<div class="pin-dot"></div>', iconSize: [18, 18], iconAnchor: [9, 9] });
 function openPoint(lat, lon) {
@@ -300,19 +366,61 @@ function openPoint(lat, lon) {
 }
 map.on('click', (e) => openPoint(e.latlng.lat, e.latlng.lng));
 
+// ---------------------------------------------------------------- screening
+let countries = new Map();
+let lastResult = null;
+async function runScreening() {
+  const out = $('scr-out');
+  const v = $('scr-scope').value;
+  const b = map.getBounds();
+  const scope = v === 'view' ? { type: 'view', bounds: { south: b.getSouth(), west: b.getWest(), north: b.getNorth(), east: b.getEast() } } : { type: 'country', id: Number(v) };
+  const mount = currentMount();
+  out.innerHTML = '<p class="scr-sum"><span class="spinner"></span>Evaluating cells…</p>';
+  $('scr-rank').disabled = $('scr-csv').disabled = true;
+  try {
+    const res = await collectCells(datasets, scope, mount, state.params, (i, n) => {
+      out.innerHTML = `<p class="scr-sum"><span class="spinner"></span>Evaluating cells… ${i}/${n} blocks</p>`;
+    });
+    lastResult = res && { ...res, mount, params: { ...state.params }, scope: v };
+    out.innerHTML = res ? summaryHtml(res, countries, mount) : '<p class="scr-sum">No grid cells for this area and mounting. Fetch and build a grid that covers it first.</p>';
+  } catch (e) {
+    console.error(e);
+    out.innerHTML = `<p class="scr-sum">Screening failed: ${e.message}</p>`;
+  } finally {
+    $('scr-rank').disabled = $('scr-csv').disabled = false;
+  }
+  return lastResult;
+}
+$('scr-rank').addEventListener('click', runScreening);
+$('scr-csv').addEventListener('click', async () => {
+  const res = lastResult?.scope === $('scr-scope').value ? lastResult : await runScreening();
+  if (!res) return;
+  const name = $('scr-scope').value === 'view' ? 'map-view' : (countries.get(Number($('scr-scope').value)) ?? 'country').replace(/[^\w.-]+/g, '_');
+  download(`solar-yield-${name}-${res.ds.res}deg.csv`, toCsv(res, countries, res.mount, res.params));
+});
+$('scr-out').addEventListener('click', (e) => {
+  const tr = e.target.closest('tr[data-lat]');
+  if (!tr) return;
+  const lat = Number(tr.dataset.lat), lon = Number(tr.dataset.lon);
+  map.setView([lat, lon], Math.max(map.getZoom(), 7));
+  openPoint(lat, lon);
+});
+$('scr-out').addEventListener('keydown', (e) => e.key === 'Enter' && e.target.click());
+
 // ---------------------------------------------------------------- start
 (async () => {
   syncControls();
   $('loading').hidden = false;
   try {
-    grid = await loadGrid();
+    datasets = await loadDatasets();
   } catch (e) {
     console.error(e);
     showBanner(`The precomputed grid could not be loaded: ${e.message}`, true);
   }
   $('loading').hidden = true;
   card = new LocationCard({
-    grid,
+    gridCell,
+    shiftFallback: (db) => [...datasets].reverse().map((d) => d.manifest.shiftByDatabase?.[db]?.median).find(Number.isFinite),
     getState,
     onClose: () => {
       marker?.remove();
@@ -320,16 +428,24 @@ map.on('click', (e) => openPoint(e.latlng.lat, e.latlng.lng));
       writeHash();
     },
   });
-  if (!grid) {
+  if (!datasets.length) {
     showBanner(
       'No precomputed grid found, so the heatmap is empty. Build it with <code>npm run fetch</code> and <code>npm run build-grid</code> (see README). You can still click the map to analyse any location.'
     );
+    $('screening').hidden = true;
   } else {
-    const m = grid.manifest;
-    if (m.synthetic) {
+    if (datasets.some((d) => d.manifest.synthetic)) {
       showBanner('<b>Synthetic demo data.</b> This grid was built from made-up weather, not PVGIS. Run <code>npm run fetch</code> and <code>npm run build-grid</code> for real results.', true);
     }
-    $('data-source').textContent = `Grid: ${m.count.toLocaleString('en-US')} land cells at ${m.grid.resolution}°, ${m.source}${m.pvgis?.years ? `, ${m.pvgis.years[0]}–${m.pvgis.years[1]}` : ''}. Built ${m.generated.slice(0, 10)}.`;
+    const list = countryList(datasets);
+    countries = new Map(list);
+    $('scr-scope').insertAdjacentHTML('beforeend', list.map(([id, name]) => `<option value="${id}">${name}</option>`).join(''));
+    $('data-source').textContent = datasets
+      .map((d) => {
+        const m = d.manifest;
+        return `${d.name} grid: ${m.count.toLocaleString('en-US')} land cells, ${m.source}${m.pvgis?.years ? ` ${m.pvgis.years[0]}–${m.pvgis.years[1]}` : ''}, built ${m.generated.slice(0, 10)}.`;
+      })
+      .join(' ');
     await refreshMap();
   }
   if (initial.point) openPoint(initial.point[0], initial.point[1]);

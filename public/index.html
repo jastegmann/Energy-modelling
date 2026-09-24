@@ -98,6 +98,21 @@
         </div>
       </section>
 
+      <section class="group" id="screening">
+        <h2>Site screening</h2>
+        <label class="field">
+          <span>Area</span>
+          <select id="scr-scope">
+            <option value="view">Current map view</option>
+          </select>
+        </label>
+        <div class="scr-actions">
+          <button id="scr-rank" type="button" class="btn">Rank by specific yield</button>
+          <button id="scr-csv" type="button" class="btn-ghost">Export CSV</button>
+        </div>
+        <div id="scr-out" aria-live="polite"></div>
+      </section>
+
       <details class="group" id="grp-module">
         <summary><h2>Irradiance, optics &amp; thermal</h2></summary>
         <div class="params" data-params="albedo,b0,gamma,effStc,alpha,uc,uv"></div>

@@ -4,7 +4,6 @@
 import { tmyFromJSON, estimateTimeShift } from './pvgis.js';
 import { prepareHourly, simulate, optimalTilt } from './model/simulate.js';
 import { lossBreakdown } from './model/losses.js';
-import { cellAt, cellCenter, cellStages } from './grid-data.js';
 import { niceTicks } from './colors.js';
 
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
@@ -20,8 +19,13 @@ export function mountLabel(m) {
 }
 
 export class LocationCard {
-  constructor({ grid, getState, onClose }) {
-    this.grid = grid;
+  /**
+   * @param gridCell   async (lat, lon, mount, params) => {stages, res, center} | null
+   * @param shiftFallback  (radiationDb) => minutes, used when the offset cannot be fitted
+   */
+  constructor({ gridCell, shiftFallback, getState, onClose }) {
+    this.gridCell = gridCell;
+    this.shiftFallback = shiftFallback;
     this.getState = getState;
     this.el = document.getElementById('loc');
     this.title = document.getElementById('loc-title');
@@ -69,7 +73,7 @@ export class LocationCard {
       const tmy = tmyFromJSON(j);
       const est = estimateTimeShift(tmy);
       const db = tmy.meta.radiationDb;
-      const fallback = this.grid?.manifest.shiftByDatabase?.[db]?.median ?? 0;
+      const fallback = this.shiftFallback?.(db) ?? 0;
       const shift = est.shift ?? fallback;
       this.hourly = prepareHourly(tmy, shift);
       this.tmyMeta = { ...tmy.meta, shift, shiftEstimated: est.shift !== null, synthetic: j.synthetic, cached: j.cached, source: j.source };
@@ -79,7 +83,7 @@ export class LocationCard {
     } catch (e) {
       if (seq !== this.seq) return;
       this.error = e.message;
-      this.setStatus(`${esc(e.message)}${this.cellPos >= 0 ? ' Showing the precomputed grid cell instead.' : ''}`, true);
+      this.setStatus(`${esc(e.message)}${this.hasCell ? ' Showing the precomputed grid cell instead.' : ''}`, true);
     }
   }
 
@@ -98,18 +102,16 @@ export class LocationCard {
 
   async renderGridCell() {
     const { lat, lon } = this.point;
-    const grid = this.grid;
-    this.cellPos = grid ? cellAt(grid, lat, lon) : -1;
-    if (this.cellPos < 0) {
-      if (!this.hourly) this.body.innerHTML = '';
-      return;
-    }
     const st = this.getState();
     const seq = this.seq;
-    const stages = await cellStages(grid, st.mount, st.params, this.cellPos);
+    const cell = this.gridCell ? await this.gridCell(lat, lon, st.mount, st.params) : null;
     if (seq !== this.seq || this.hourly) return;
-    const c = cellCenter(grid, this.cellPos);
-    const res = grid.manifest.grid.resolution;
+    this.hasCell = !!cell;
+    if (!cell) {
+      this.body.innerHTML = '';
+      return;
+    }
+    const { stages, res, center: c } = cell;
     this.sub.textContent = `${mountLabel(st.mount)} · precomputed ${res}° grid cell (centre ${coord(c.lat, c.lon)})`;
     const tilt = stages.tilt;
     this.body.innerHTML =

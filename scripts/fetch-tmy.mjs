@@ -4,6 +4,7 @@
 // (Ctrl-C) and restarted at any time.
 //
 //   node scripts/fetch-tmy.mjs [--res 0.5] [--bbox=lonMin,latMin,lonMax,latMax]
+//        [--region africa] [--countries "Kenya,Tanzania"]
 //        [--concurrency 8] [--rate 20] [--limit N] [--retry-failed]
 //        [--base https://re.jrc.ec.europa.eu/api/v5_3] [--startyear Y --endyear Y]
 //
@@ -15,12 +16,14 @@ import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { PVGIS_BASE, tmyUrl, parsePvgisTmy, pvgisErrorMessage, isSeaError } from '../public/js/pvgis.js';
 import { writeTmyFile } from './lib/tmy-store.mjs';
-import { ROOT, loadLandCells, cellCenter, landSamples, cachePath, parseBbox, inBbox } from './lib/grid.mjs';
+import { ROOT, loadLandCells, selectCells, landSamples, cachePath, parseBbox } from './lib/grid.mjs';
 
 const { values: args } = parseArgs({
   options: {
     res: { type: 'string', default: '0.5' },
     bbox: { type: 'string' },
+    region: { type: 'string' },
+    countries: { type: 'string' },
     concurrency: { type: 'string', default: '8' },
     rate: { type: 'string', default: '20' },
     limit: { type: 'string' },
@@ -43,7 +46,7 @@ mkdirSync(cacheDir, { recursive: true });
 const failed = existsSync(failedPath) ? JSON.parse(readFileSync(failedPath, 'utf8')) : {};
 const official = args.base.replace(/\/$/, '') === PVGIS_BASE;
 
-let todo = land.cells.filter((c) => inBbox(cellCenter(c.idx, res, land.nx), bbox));
+let todo = selectCells(land, { bbox, region: args.region, countries: args.countries });
 const inArea = todo.length;
 todo = todo.filter((c) => !existsSync(cachePath(cacheDir, c.idx, land.nx)));
 const cached = inArea - todo.length;

@@ -1,7 +1,7 @@
 # Publishes public/ to GitHub Pages on every push to main.
 # One-off setup: repository Settings -> Pages -> Build and deployment -> Source: "GitHub Actions".
-# The heatmap needs the precomputed grid in public/data/grid/ (build it locally with
-# `npm run fetch && npm run build-grid`, remove that path from .gitignore and commit it).
+# The heatmap needs the precomputed grids in public/data/grids/ (build them locally with
+# `npm run fetch && npm run build-grid`, remove that path from .gitignore and commit them).
 # Live location analysis needs server.mjs and is not available on Pages.
 name: Deploy to GitHub Pages
 
@@ -39,10 +39,10 @@ jobs:
       - uses: actions/checkout@v4
       - name: Check for a precomputed grid
         run: |
-          if [ -f public/data/grid/manifest.json ]; then
-            echo "Grid found: $(grep -o '"count": [0-9]*' public/data/grid/manifest.json)"
+          if [ -f public/data/grids/index.json ]; then
+            echo "Grids found:"; cat public/data/grids/index.json
           else
-            echo "::warning::No public/data/grid/manifest.json committed - the site will show an empty map with build instructions."
+            echo "::warning::No public/data/grids/index.json committed - the site will show an empty map with build instructions."
           fi
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
