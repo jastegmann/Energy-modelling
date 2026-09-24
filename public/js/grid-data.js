@@ -5,6 +5,7 @@
 import { stagesFromFields } from './model/losses.js';
 import { FIXED_TILTS, configId } from './model/configs.js';
 import { unpackFields, GRID_ENCODING } from './grid-codec.js';
+import { decodeScreenBlock, alignScreen, evaluateFilters, protectedShare } from './screening-layers.js';
 
 async function loadBinary(url) {
   const r = await fetch(url);
@@ -57,6 +58,21 @@ export class Dataset {
 
   get name() {
     return `${this.res}°`;
+  }
+
+  /** Load screening.json if the screening layers have been built for this grid. */
+  async loadScreening(listed = true) {
+    this.screening = null;
+    this.screenBlocks = new Set();
+    if (!listed) return null;
+    try {
+      const r = await fetch(`${this.base}screening.json`, { cache: 'no-cache' });
+      this.screening = r.ok ? await r.json() : null;
+    } catch {
+      this.screening = null;
+    }
+    this.screenBlocks = new Set(this.screening?.blocks ?? []);
+    return this.screening;
   }
 
   /** True if the grid holds every configuration needed for this mounting. */
@@ -117,6 +133,23 @@ export class Dataset {
           stat: unpackFields(staticBuf, this.manifest.staticFields, M),
           config: (cid) => cached(`${this.base}${id}/${cid}`, () => loadBinary(`${dir}${cid}.bin.gz`).then((buf) => unpackFields(buf, this.manifest.fields, M))),
           values: new Map(), // evaluation cache: key -> results
+          screenData: null,
+          filterCache: new Map(),
+        };
+        /** Screening layers aligned to this block's cells, or null if not built. */
+        b.screen = () => {
+          if (!this.screenBlocks?.has(id)) return Promise.resolve(null);
+          b.screenData ??= loadBinary(`${this.base}screening/${id}.bin.gz`)
+            .then((buf) => {
+              const sc = alignScreen(decodeScreenBlock(buf), cells);
+              sc.protected = protectedShare(sc);
+              return sc;
+            })
+            .catch((e) => {
+              console.warn(e);
+              return null;
+            });
+          return b.screenData;
         };
         this.ready[br * this.nbx + bc] = b;
         return b;
@@ -160,7 +193,9 @@ export async function loadDatasets(base = 'data/grids/') {
     index.datasets.map(async (d) => {
       const r = await fetch(`${base}${d.path}manifest.json`, { cache: 'no-cache' });
       if (!r.ok) throw new Error(`${base}${d.path}manifest.json: HTTP ${r.status}`);
-      return new Dataset(`${base}${d.path}`, await r.json());
+      const ds = new Dataset(`${base}${d.path}`, await r.json());
+      await ds.loadScreening(d.screening !== false);
+      return ds;
     })
   );
   return list.sort((a, b) => b.res - a.res);
@@ -270,4 +305,21 @@ export async function cellStages(block, mount, params, pos) {
 export function pickValue(results, variable, i) {
   if (variable === 'opttilt') return results.tilt ? results.tilt[i] : NaN;
   return results[variable][i];
+}
+
+/**
+ * Screening results of a block for the given filters (cached):
+ * {suitable (0–1), pass (0/1), gridKm, protected} or null if no layers exist.
+ */
+export async function blockFilters(block, filters) {
+  const sc = await block.screen();
+  if (!sc) return null;
+  const key = JSON.stringify(filters);
+  let r = block.filterCache.get(key);
+  if (!r) {
+    r = { ...evaluateFilters(sc, filters), gridKm: sc.gridKm, protected: sc.protected, land: sc.land };
+    block.filterCache.set(key, r);
+    if (block.filterCache.size > 4) block.filterCache.delete(block.filterCache.keys().next().value);
+  }
+  return r;
 }

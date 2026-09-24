@@ -7,6 +7,8 @@
 // with layers ordered fine -> coarse.
 
 const DEG = 180 / Math.PI;
+/** Colour of a cell that is deliberately not shown: transparent, but hides coarser grids below. */
+export const HIDDEN = 1;
 
 export function createHeatLayer(L, options = {}) {
   const HeatLayer = L.GridLayer.extend({
@@ -98,7 +100,7 @@ export function createHeatLayer(L, options = {}) {
             const pos = b.local[(row - b.row0) * cpb + (col - b.col0)];
             if (pos < 0 || !b.colors[pos]) continue;
             painted[o + x] = 1;
-            if (!d.smooth) {
+            if (!d.smooth || b.colors[pos] === HIDDEN) {
               px[o + x] = b.colors[pos];
               continue;
             }

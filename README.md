@@ -15,8 +15,9 @@ land areas. The yield comes from **PVGIS** typical-meteorological-year (TMY) irr
 - **Click any location:** the site fetches that point's TMY from PVGIS live and runs the full hourly
   simulation. It shows the annual yield, PR, monthly yields, a PVsyst-like loss diagram, a comparison of
   all mounting types, and where the data came from.
-- **Site screening:** rank all grid cells of a country, or of the current map view, by specific yield for
-  the current inputs. You can jump to any of the top cells and export every cell as CSV.
+- **Site screening:** filter land by protected areas, land cover, slope and distance to the power grid.
+  Then rank all grid cells of a country, or of the current map view, by specific yield for the current
+  inputs. You can jump to any of the top cells and export every cell as CSV.
 
 ```
 ┌───────────────┬────────────────────────────────────────────────┐
@@ -31,7 +32,7 @@ land areas. The yield comes from **PVGIS** typical-meteorological-year (TMY) irr
 
 ## Quick start
 
-Requirements: **Node.js 20+** (22 recommended). The site needs no npm packages at run time.
+Requirements: **Node.js 22.13+** (24 recommended). The site needs no npm packages at run time.
 
 ```bash
 npm start                 # http://localhost:8080
@@ -88,6 +89,52 @@ Tips:
 - Behind an HTTP proxy, run the scripts and the server with `NODE_USE_ENV_PROXY=1` (Node ≥ 22.21 / 24).
 - To see the UI without PVGIS: `npm run build-grid -- --synthetic --res 2` builds a grid from made‑up
   weather. The site then shows a prominent "synthetic data" warning.
+
+### Site-screening layers (optional)
+
+The screening filters (protected areas, land cover, slope, distance to the power grid) need a second
+precomputation for each grid you built:
+
+```bash
+npm install                                              # once: installs the GeoTIFF reader
+npm run build-screening -- --res 0.1 --region africa
+npm run build-screening -- --res 0.05 --countries "Kenya"
+```
+
+| Layer | Source | Licence | How it is read |
+|---|---|---|---|
+| Protected areas | OpenStreetMap: `boundary=protected_area` (nature classes 1–19, 97–99), `boundary=national_park`, `leisure=nature_reserve` | ODbL, commercial use allowed with attribution | Overpass API, one query per country |
+| Land cover | ESA WorldCover 10 m 2021 v200 | CC BY 4.0 | Cloud-optimised GeoTIFFs; only the ~150 m overview is read |
+| Slope | Copernicus DEM GLO-90 | Free, including commercial use (Copernicus licence) | Cloud-optimised GeoTIFFs, ~185 m overview |
+| Distance to grid | gridfinder (Arderne et al. 2020), modelled medium-voltage network | CC BY 4.0 | `grid.gpkg` from Zenodo |
+
+For every grid cell, the script stores the share of the cell's land in each combination of:
+- protected yes/no
+- 11 land-cover classes
+- 5 slope classes (0–3°, 3–5°, 5–10°, 10–15°, >15°)
+
+It also stores the distance from the cell centre to the nearest gridfinder line. The page combines these
+with your filter choices exactly: for example, "not protected, not forest or built-up, slope ≤ 10°". The
+map can show **suitable land (%)** or **distance to grid**, or hide cells that fail the filters. Rankings
+and CSV exports then include only passing cells, with suitable area (km²), protected share and grid
+distance.
+
+Notes:
+- **Time and data volume:** for all of Africa, expect about 3,000 one-degree tiles, a few GB of downloads
+  and 1–3 hours. Results are cached per tile in `cache/screening/`, so the script can be stopped and
+  restarted, and other resolutions reuse them.
+- **gridfinder download:** the network is downloaded once from Zenodo. If that fails, download `grid.gpkg`
+  from <https://zenodo.org/records/3628142> and pass `--gridfinder path/to/grid.gpkg`.
+- **Overpass limits:** Overpass is a shared public service. Large countries can take several minutes and
+  are retried automatically; use `--overpass <url>` for another instance.
+- **Limitations:**
+  - gridfinder lines are *predicted*, not surveyed.
+  - OpenStreetMap protected-area coverage varies by country.
+  - Land cover and slope at ~150–185 m are meant for screening, not site design.
+- **Attribution** when publishing results: © OpenStreetMap contributors; ESA WorldCover project 2021 /
+  Contains modified Copernicus Sentinel data (2021); Copernicus DEM © DLR e.V. 2010–2014 and © Airbus
+  Defence and Space GmbH 2014–2018, provided under COPERNICUS by the EU and ESA; gridfinder, Arderne et
+  al. (2020), Scientific Data 7:19.
 
 ### Hosting
 
@@ -241,6 +288,7 @@ public/                     the website (no build step)
   js/grid-codec.js          compact grid file encoding
   js/location.js            location card (live hourly simulation)
   js/screening.js           ranking by country / map view, CSV export
+  js/screening-layers.js    screening layer format and filter evaluation
   js/pvgis.js               PVGIS TMY parsing and time alignment
   js/model/                 solar position, Perez, IAM, geometry, simulation, losses, grid configs
   vendor/leaflet/           Leaflet 1.9.4 (BSD-2-Clause)
@@ -249,7 +297,12 @@ scripts/
   lib/regions.mjs           country groupings (Africa)
   fetch-tmy.mjs             resumable, rate-limited PVGIS download
   build-grid.mjs            multi-threaded grid precomputation
+  build-screening.mjs       protected areas, land cover, slope, grid distance per cell
+  lib/raster.mjs            windowed reads of cloud-optimised GeoTIFFs
+  lib/osm-protected.mjs     OpenStreetMap protected areas via Overpass
+  lib/gpkg-lines.mjs        GeoPackage lines and nearest-line distances
   dev/mock-pvgis.mjs        mock PVGIS server with SYNTHETIC data (tests, offline development)
+  dev/mock-screening-sources.mjs  SYNTHETIC WorldCover/DEM tiles, Overpass and gridfinder stand-ins
   dev/make-pvlib-fixtures.py  pvlib reference values for the tests
 data/land-cells-*.json[.gz]  land masks with country per cell (world 0.5°/1°/2°, Africa 0.1°/0.05°)
 test/                       node:test suite (model vs pvlib, pipeline end-to-end)
@@ -269,4 +322,5 @@ pip install pvlib && python scripts/dev/make-pvlib-fixtures.py   # regenerate re
 - Irradiance and weather: PVGIS © European Union, 2001–2026. Reuse is authorised provided the source is
   acknowledged.
 - Map tiles and data: © OpenStreetMap contributors (ODbL).
-- Land mask: Natural Earth (public domain) via `world-atlas`.
+- Land mask and countries: Natural Earth (public domain) via `world-atlas`.
+- Screening layers: see the attribution list under "Site-screening layers".

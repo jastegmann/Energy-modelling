@@ -287,7 +287,7 @@ const datasets = readdirSync(gridsDir, { withFileTypes: true })
   .filter((d) => d.isDirectory() && existsSync(join(gridsDir, d.name, 'manifest.json')))
   .map((d) => {
     const m = JSON.parse(readFileSync(join(gridsDir, d.name, 'manifest.json'), 'utf8'));
-    return m.version === 2 ? { name: m.name, path: `${d.name}/`, resolution: m.resolution, count: m.count, minZoom: m.minZoom, configSet: m.configSet, synthetic: m.synthetic } : null;
+    return m.version === 2 ? { name: m.name, path: `${d.name}/`, resolution: m.resolution, count: m.count, minZoom: m.minZoom, configSet: m.configSet, synthetic: m.synthetic, screening: existsSync(join(gridsDir, d.name, 'screening.json')) } : null;
   })
   .filter(Boolean)
   .sort((a, b) => b.resolution - a.resolution);

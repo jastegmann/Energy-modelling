@@ -127,8 +127,9 @@ test('fetch -> build -> browser evaluation reproduces the hourly model', async (
     assert.equal(res.rows.length, expected);
     assert.ok(res.rows.every((r, i) => r.country === swiss && (i === 0 || r.yield <= res.rows[i - 1].yield)));
     const csv = toCsv(res, new Map([[swiss, 'Switzerland']]), mounts[0], DEFAULT_PARAMS).split('\n');
-    assert.equal(csv.length, 4 + expected);
-    assert.match(csv[4], /^1,\d+\.\d+,\d+\.\d+,Switzerland,/);
+    const header = csv.findIndex((l) => l.startsWith('rank,'));
+    assert.equal(csv.length, header + 1 + expected);
+    assert.match(csv[header + 1], /^1,\d+\.\d+,\d+\.\d+,Switzerland,/);
   } finally {
     globalThis.fetch = realFetch;
   }
