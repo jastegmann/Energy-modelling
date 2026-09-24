@@ -4,7 +4,7 @@
 // (with --flaky) occasional rate-limit errors.
 //
 //   node scripts/dev/mock-pvgis.mjs [--port 8091] [--flaky 0.1]
-//   node scripts/fetch-tmy.mjs --base http://localhost:8091/api/v5_3 --bbox 5,44,10,48
+//   node scripts/fetch-tmy.mjs --base http://localhost:8091/api/v5_3 --bbox=5,44,10,48
 
 import http from 'node:http';
 import { parseArgs } from 'node:util';

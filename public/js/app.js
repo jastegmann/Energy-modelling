@@ -2,10 +2,12 @@
 
 import { DEFAULT_PARAMS, PARAM_INFO } from './model/losses.js';
 import { FIXED_GCRS, EW_GCRS, TRACKER_GCRS, TRACKER_LIMITS } from './model/configs.js';
-import { loadGrid, computeValues, cellAt } from './grid-data.js';
-import { createHeatLayer } from './heat-layer.js';
+import { loadDatasets, blockResults, blockFilters, cellStages, pickValue } from './grid-data.js';
+import { LAND_COVER, SLOPE_LIMITS, NBINS, DEFAULT_FILTERS, cellAreaKm2 } from './screening-layers.js';
+import { createHeatLayer, HIDDEN } from './heat-layer.js';
 import { VARIABLES, buildLut, cssGradient, niceTicks, autoRange } from './colors.js';
 import { LocationCard, mountLabel } from './location.js';
+import { countryList, collectCells, summaryHtml, toCsv, download } from './screening.js';
 
 const L = window.L;
 const $ = (id) => document.getElementById(id);
@@ -20,7 +22,9 @@ const DEFAULT_STATE = {
   scaleMode: 'fixed',
   opacity: 0.75,
   smooth: false,
+  filters: { ...DEFAULT_FILTERS, landCover: [...DEFAULT_FILTERS.landCover] },
 };
+const SCREEN_VARIABLES = new Set(['suitable', 'grid']);
 const state = structuredClone(DEFAULT_STATE);
 state.params = { ...DEFAULT_PARAMS };
 
@@ -39,6 +43,8 @@ function writeHash() {
   q.set('ew', `${state.ew.tilt},${state.ew.gcr}`);
   q.set('trk', `${state.tracker.limit},${state.tracker.gcr},${state.tracker.backtrack ? 1 : 0}`);
   q.set('v', state.variable);
+  const f = state.filters;
+  q.set('flt', [f.excludeProtected ? 1 : 0, f.landCover.map((x) => (x ? 1 : 0)).join(''), f.maxSlope, f.maxGridKm, f.minSuitable, f.hideFailing ? 1 : 0].join('.'));
   if (state.scaleMode !== 'fixed') q.set('scale', state.scaleMode);
   const changed = Object.keys(DEFAULT_PARAMS).filter((k) => state.params[k] !== DEFAULT_PARAMS[k]);
   if (changed.length) q.set('p', changed.map((k) => `${k}:${state.params[k]}`).join(','));
@@ -73,6 +79,17 @@ function readHash() {
   }
   if (VARIABLES[q.get('v')]) state.variable = q.get('v');
   if (q.get('scale') === 'auto') state.scaleMode = 'auto';
+  const flt = (q.get('flt') ?? '').split('.');
+  if (flt.length === 6 && flt[1].length === LAND_COVER.length) {
+    state.filters = {
+      excludeProtected: flt[0] === '1',
+      landCover: [...flt[1]].map((c) => c === '1'),
+      maxSlope: [0, 3, 5, 10, 15].includes(+flt[2]) ? +flt[2] : DEFAULT_FILTERS.maxSlope,
+      maxGridKm: Math.max(0, +flt[3] || 0),
+      minSuitable: Math.min(100, Math.max(0, +flt[4] || 0)),
+      hideFailing: flt[5] === '1',
+    };
+  }
   for (const kv of (q.get('p') ?? '').split(',').filter(Boolean)) {
     const [k, v] = kv.split(':');
     if (k in DEFAULT_PARAMS && Number.isFinite(+v)) state.params[k] = +v;
@@ -136,6 +153,16 @@ function syncControls() {
   $('opacity').value = Math.round(state.opacity * 100);
   $('opacity-out').textContent = `${Math.round(state.opacity * 100)}%`;
   $('smooth').checked = state.smooth;
+  const f = state.filters;
+  $('flt-prot').checked = f.excludeProtected;
+  document.querySelectorAll('#flt-lc input').forEach((el) => (el.checked = f.landCover[+el.dataset.lc]));
+  $('flt-slope').value = f.maxSlope;
+  $('flt-grid').value = f.maxGridKm;
+  $('flt-min').value = f.minSuitable;
+  $('flt-min-out').textContent = `${f.minSuitable}%`;
+  $('flt-hide').checked = f.hideFailing;
+  const nLc = f.landCover.filter(Boolean).length;
+  $('flt-summary').textContent = `· ${f.excludeProtected ? 'no protected areas, ' : ''}${nLc}/${LAND_COVER.length} land covers, slope ≤ ${f.maxSlope ? `${f.maxSlope}°` : 'any'}${f.maxGridKm ? `, grid ≤ ${f.maxGridKm} km` : ''}`;
   document.querySelectorAll('[data-param]').forEach((el) => {
     if (document.activeElement !== el) el.value = state.params[el.dataset.param];
   });
@@ -189,6 +216,18 @@ document.querySelectorAll('[data-param]').forEach((el) =>
 );
 // Show the clamped value once the field loses focus.
 document.querySelectorAll('[data-param]').forEach((el) => el.addEventListener('change', () => (el.value = state.params[el.dataset.param])));
+$('flt-lc').innerHTML = LAND_COVER.map((c, i) => `<label class="check"><input type="checkbox" data-lc="${i}"> ${c.name}</label>`).join('');
+$('flt-prot').addEventListener('change', (e) => ((state.filters.excludeProtected = e.target.checked), changed()));
+$('flt-lc').addEventListener('change', (e) => {
+  if (e.target.dataset.lc === undefined) return;
+  state.filters.landCover[+e.target.dataset.lc] = e.target.checked;
+  changed();
+});
+$('flt-slope').addEventListener('change', (e) => ((state.filters.maxSlope = +e.target.value), changed()));
+$('flt-grid').addEventListener('change', (e) => ((state.filters.maxGridKm = +e.target.value), changed()));
+$('flt-min').addEventListener('input', (e) => ((state.filters.minSuitable = +e.target.value), changed()));
+$('flt-hide').addEventListener('change', (e) => ((state.filters.hideFailing = e.target.checked), changed()));
+
 $('reset').addEventListener('click', () => {
   Object.assign(state, structuredClone(DEFAULT_STATE));
   state.params = { ...DEFAULT_PARAMS };
@@ -212,37 +251,98 @@ map.createPane('heat');
 map.getPane('heat').style.zIndex = 350;
 map.getPane('heat').classList.add('heat-pane');
 const heat = createHeatLayer(L, { pane: 'heat', opacity: state.opacity }).addTo(map);
-map.on('moveend', writeHash);
+map.on('moveend', () => {
+  writeHash();
+  clearTimeout(moveTimer);
+  moveTimer = setTimeout(refreshMap, 150); // load blocks that came into view
+});
+let moveTimer = 0;
 
-let grid = null;
-let values = null;
+let datasets = []; // coarse -> fine
+let shown = []; // layers currently painted, fine -> coarse: {ds, results: Map(blockId -> results)}
 let range = [0, 1];
 let card = null;
 let marker = null;
 let seq = 0;
 
 async function refreshMap() {
-  if (!grid) return;
+  if (!datasets.length) return;
   const my = ++seq;
-  const loading = setTimeout(() => ($('loading').hidden = false), 150);
+  const loading = setTimeout(() => ($('loading').hidden = false), 200);
   try {
     const mount = currentMount();
-    const v = await computeValues(grid, mount, state.params, state.variable);
-    if (my !== seq) return;
-    values = v;
-    const meta = VARIABLES[state.variable];
-    range = state.scaleMode === 'auto' ? autoRange(values) : meta.range;
-    const lut = buildLut(meta.ramp);
-    const colors = new Uint32Array(grid.M);
-    const [lo, hi] = range;
-    for (let i = 0; i < grid.M; i++) {
-      const x = values[i];
-      if (Number.isFinite(x)) colors[i] = lut[Math.max(0, Math.min(255, Math.round(((x - lo) / (hi - lo)) * 255)))];
+    const zoom = map.getZoom();
+    const b = map.getBounds().pad(0.25);
+    const box = [Math.max(-90, b.getSouth()), b.getWest(), Math.min(90, b.getNorth()), b.getEast()];
+    const layers = [];
+    const lacking = [];
+    const screenVar = SCREEN_VARIABLES.has(state.variable);
+    const needFilters = screenVar || state.filters.hideFailing;
+    for (const ds of datasets) {
+      if (zoom < ds.minZoom) continue;
+      if (screenVar ? !ds.screening : !ds.supports(mount)) {
+        lacking.push(ds.name);
+        continue;
+      }
+      const ids = ds.blockIdsIn(...box);
+      const parts = await Promise.all(
+        ids.map(async (id) => {
+          const block = await ds.block(id);
+          return {
+            block,
+            results: screenVar ? null : await blockResults(block, mount, state.params),
+            filters: needFilters ? await blockFilters(block, state.filters) : null,
+          };
+        })
+      );
+      if (my !== seq) return;
+      if (parts.length) layers.push({ ds, parts });
     }
-    const g = grid.manifest.grid;
+    if (my !== seq) return;
+
+    const meta = VARIABLES[state.variable];
+    for (const l of layers) {
+      for (const p of l.parts) {
+        p.values = new Float32Array(p.block.M);
+        const fr = p.filters;
+        for (let i = 0; i < p.block.M; i++) {
+          if (state.variable === 'suitable') p.values[i] = fr ? 100 * fr.suitable[i] : NaN;
+          else if (state.variable === 'grid') p.values[i] = fr ? fr.gridKm[i] : NaN;
+          else p.values[i] = pickValue(p.results, state.variable, i);
+          if (state.filters.hideFailing && fr && fr.pass[i] === 0) {
+            p.hidden ??= new Uint8Array(p.block.M);
+            p.hidden[i] = 1;
+            p.values[i] = NaN;
+          }
+        }
+      }
+    }
+    if (state.scaleMode === 'auto') {
+      const sample = [];
+      for (const l of layers) for (const p of l.parts) for (let i = 0; i < p.values.length; i += 7) sample.push(p.values[i]);
+      range = autoRange(sample);
+    } else range = meta.range;
+    const lut = buildLut(meta.ramp);
+    const [lo, hi] = range;
+    const heatLayers = [];
+    for (const l of [...layers].reverse()) {
+      const ds = l.ds;
+      const blocks = new Array(ds.nbx * ds.nby);
+      for (const p of l.parts) {
+        const colors = new Uint32Array(p.block.M);
+        for (let i = 0; i < p.block.M; i++) {
+          const x = p.values[i];
+          if (Number.isFinite(x)) colors[i] = lut[Math.max(0, Math.min(255, Math.round(((x - lo) / (hi - lo)) * 255)))];
+          else if (p.hidden?.[i]) colors[i] = HIDDEN; // transparent, but covers coarser grids
+        }
+        blocks[p.block.br * ds.nbx + p.block.bc] = { row0: p.block.row0, col0: p.block.col0, local: p.block.local, colors, values: p.values };
+      }
+      heatLayers.push({ res: ds.res, nx: ds.nx, ny: ds.ny, cpb: ds.cpb, nbx: ds.nbx, blocks });
+    }
+    shown = [...layers].reverse().map((l) => ({ ds: l.ds, values: new Map(l.parts.map((p) => [p.block.id, p.values])) }));
     map.getPane('heat').classList.toggle('smooth', state.smooth);
-    heat.setData({ nx: g.nx, ny: g.ny, res: g.resolution, gridIndex: grid.gridIndex, colors, values, lut, lo, hi, smooth: state.smooth });
-    renderLegend(meta, mount);
+    heat.setData({ layers: heatLayers, lut, lo, hi, smooth: state.smooth });
+    renderLegend(meta, mount, layers.map((l) => l.ds), lacking, screenVar);
   } catch (e) {
     console.error(e);
     showBanner(`Could not compute the map: ${e.message}`, true);
@@ -252,7 +352,7 @@ async function refreshMap() {
   }
 }
 
-function renderLegend(meta, mount) {
+function renderLegend(meta, mount, used, lacking, screenVar) {
   $('legend').hidden = false;
   $('legend-title').textContent = `${meta.label} (${meta.unit})`;
   $('legend-bar').style.background = cssGradient(meta.ramp);
@@ -261,8 +361,11 @@ function renderLegend(meta, mount) {
     .filter((t) => t >= lo && t <= hi)
     .map((t) => `<span style="left:${((t - lo) / (hi - lo)) * 100}%">${t.toLocaleString('en-US')}</span>`)
     .join('');
-  const what = state.variable === 'ghi' ? 'Horizontal plane' : mountLabel(mount);
-  $('legend-note').textContent = `${what} · ${grid.manifest.grid.resolution}° grid${state.scaleMode === 'fixed' ? ' · values beyond the range are clamped' : ''}`;
+  const what = screenVar ? 'Screening layers' : state.variable === 'ghi' ? 'Horizontal plane' : mountLabel(mount);
+  const grids = used.length ? `${used.map((d) => d.name).reverse().join(' / ')} grid` : 'no grid data for this setting';
+  const miss = lacking.length ? ` · ${lacking.join(', ')} grid ${screenVar ? 'has no screening layers' : 'lacks this layout'}` : '';
+  const hidden = state.filters.hideFailing ? ' · cells failing the filters hidden' : '';
+  $('legend-note').textContent = `${what} · ${grids}${miss}${hidden}${state.scaleMode === 'fixed' ? ' · values beyond the range are clamped' : ''}`;
 }
 
 function showBanner(html, warn = false) {
@@ -272,23 +375,78 @@ function showBanner(html, warn = false) {
   b.hidden = false;
 }
 
-// Hover read-out.
+// Hover read-out from the finest grid shown at the cursor.
 let hoverFrame = 0;
 map.on('mousemove', (e) => {
-  if (!grid || !values) return;
+  if (!shown.length) return;
   cancelAnimationFrame(hoverFrame);
   hoverFrame = requestAnimationFrame(() => {
     const { lat, lng } = e.latlng;
     const lon = ((((lng + 180) % 360) + 360) % 360) - 180;
-    const pos = cellAt(grid, lat, lon);
     const chip = $('hover');
-    if (pos < 0 || !Number.isFinite(values[pos])) return (chip.hidden = true);
-    const meta = VARIABLES[state.variable];
-    chip.innerHTML = `<b>${values[pos].toLocaleString('en-US', { maximumFractionDigits: meta.digits })}</b> ${meta.unit} &nbsp;<span class="muted">${lat.toFixed(2)}°, ${lon.toFixed(2)}°</span>`;
-    chip.hidden = false;
+    for (const { ds, values } of shown) {
+      const hit = ds.lookup(lat, lon);
+      const v = hit && values.get(hit.block.id)?.[hit.pos];
+      if (!Number.isFinite(v)) continue;
+      const meta = VARIABLES[state.variable];
+      chip.innerHTML = `<b>${v.toLocaleString('en-US', { maximumFractionDigits: meta.digits })}</b> ${meta.unit} &nbsp;<span class="muted">${lat.toFixed(2)}°, ${lon.toFixed(2)}° · ${ds.name}</span>`;
+      chip.hidden = false;
+      return;
+    }
+    chip.hidden = true;
   });
 });
 map.on('mouseout', () => ($('hover').hidden = true));
+
+/** Precomputed values of the finest grid cell (holding this mounting) at a point. */
+async function gridCell(lat, lon, mount, params) {
+  for (const ds of [...datasets].reverse()) {
+    if (!ds.supports(mount)) continue;
+    const [id] = ds.blockIdsIn(lat, lon, lat, lon);
+    if (!id) continue;
+    await ds.block(id);
+    const hit = ds.lookup(lat, lon);
+    if (!hit) continue;
+    return { stages: await cellStages(hit.block, mount, params, hit.pos), res: ds.res, center: ds.cellCenter(hit.block, hit.pos) };
+  }
+  return null;
+}
+
+/** Screening summary of the finest grid cell with screening layers at a point. */
+async function screenCell(lat, lon, filters) {
+  for (const ds of [...datasets].reverse()) {
+    if (!ds.screening) continue;
+    const [id] = ds.blockIdsIn(lat, lon, lat, lon);
+    if (!id || !ds.screenBlocks.has(id)) continue;
+    const block = await ds.block(id);
+    const hit = ds.lookup(lat, lon);
+    if (!hit) continue;
+    const fr = await blockFilters(block, filters);
+    const sc = await block.screen();
+    if (!fr || !sc || !sc.valid[hit.pos]) continue;
+    const i = hit.pos, n = sc.n, NL = LAND_COVER.length, NS = SLOPE_LIMITS.length + 1;
+    const landCover = new Array(NL).fill(0), slope = new Array(NS).fill(0);
+    for (let b = 0; b < NBINS; b++) {
+      const v = sc.hist[b * n + i] / 255;
+      landCover[Math.floor((b % (NL * NS)) / NS)] += v;
+      slope[b % NS] += v;
+    }
+    const c = ds.cellCenter(block, i);
+    return {
+      res: ds.res,
+      area: cellAreaKm2(c.lat, ds.res),
+      suitable: fr.suitable[i],
+      pass: !!fr.pass[i],
+      protected: fr.protected[i],
+      gridKm: fr.gridKm[i],
+      landCover,
+      names: LAND_COVER.map((x) => x.name),
+      slope,
+      slopeLabels: [...SLOPE_LIMITS.map((l, k) => `${k ? SLOPE_LIMITS[k - 1] : 0}–${l}°`), `>${SLOPE_LIMITS[SLOPE_LIMITS.length - 1]}°`],
+    };
+  }
+  return null;
+}
 
 const pinIcon = L.divIcon({ className: 'pin', html: '<div class="pin-dot"></div>', iconSize: [18, 18], iconAnchor: [9, 9] });
 function openPoint(lat, lon) {
@@ -300,19 +458,62 @@ function openPoint(lat, lon) {
 }
 map.on('click', (e) => openPoint(e.latlng.lat, e.latlng.lng));
 
+// ---------------------------------------------------------------- screening
+let countries = new Map();
+let lastResult = null;
+async function runScreening() {
+  const out = $('scr-out');
+  const v = $('scr-scope').value;
+  const b = map.getBounds();
+  const scope = v === 'view' ? { type: 'view', bounds: { south: b.getSouth(), west: b.getWest(), north: b.getNorth(), east: b.getEast() } } : { type: 'country', id: Number(v) };
+  const mount = currentMount();
+  out.innerHTML = '<p class="scr-sum"><span class="spinner"></span>Evaluating cells…</p>';
+  $('scr-rank').disabled = $('scr-csv').disabled = true;
+  try {
+    const res = await collectCells(datasets, scope, mount, state.params, state.filters, (i, n) => {
+      out.innerHTML = `<p class="scr-sum"><span class="spinner"></span>Evaluating cells… ${i}/${n} blocks</p>`;
+    });
+    lastResult = res && { ...res, mount, params: { ...state.params }, filters: structuredClone(state.filters), scope: v };
+    out.innerHTML = res ? summaryHtml(lastResult, countries, mount) : '<p class="scr-sum">No grid cells for this area and mounting. Fetch and build a grid that covers it first.</p>';
+  } catch (e) {
+    console.error(e);
+    out.innerHTML = `<p class="scr-sum">Screening failed: ${e.message}</p>`;
+  } finally {
+    $('scr-rank').disabled = $('scr-csv').disabled = false;
+  }
+  return lastResult;
+}
+$('scr-rank').addEventListener('click', runScreening);
+$('scr-csv').addEventListener('click', async () => {
+  const res = await runScreening(); // always with the current inputs
+  if (!res) return;
+  const name = $('scr-scope').value === 'view' ? 'map-view' : (countries.get(Number($('scr-scope').value)) ?? 'country').replace(/[^\w.-]+/g, '_');
+  download(`solar-yield-${name}-${res.ds.res}deg.csv`, toCsv(res, countries, res.mount, res.params));
+});
+$('scr-out').addEventListener('click', (e) => {
+  const tr = e.target.closest('tr[data-lat]');
+  if (!tr) return;
+  const lat = Number(tr.dataset.lat), lon = Number(tr.dataset.lon);
+  map.setView([lat, lon], Math.max(map.getZoom(), 7));
+  openPoint(lat, lon);
+});
+$('scr-out').addEventListener('keydown', (e) => e.key === 'Enter' && e.target.click());
+
 // ---------------------------------------------------------------- start
 (async () => {
   syncControls();
   $('loading').hidden = false;
   try {
-    grid = await loadGrid();
+    datasets = await loadDatasets();
   } catch (e) {
     console.error(e);
     showBanner(`The precomputed grid could not be loaded: ${e.message}`, true);
   }
   $('loading').hidden = true;
   card = new LocationCard({
-    grid,
+    gridCell,
+    screenCell,
+    shiftFallback: (db) => [...datasets].reverse().map((d) => d.manifest.shiftByDatabase?.[db]?.median).find(Number.isFinite),
     getState,
     onClose: () => {
       marker?.remove();
@@ -320,16 +521,34 @@ map.on('click', (e) => openPoint(e.latlng.lat, e.latlng.lng));
       writeHash();
     },
   });
-  if (!grid) {
+  if (!datasets.length) {
     showBanner(
       'No precomputed grid found, so the heatmap is empty. Build it with <code>npm run fetch</code> and <code>npm run build-grid</code> (see README). You can still click the map to analyse any location.'
     );
+    $('screening').hidden = true;
   } else {
-    const m = grid.manifest;
-    if (m.synthetic) {
+    if (datasets.some((d) => d.manifest.synthetic)) {
       showBanner('<b>Synthetic demo data.</b> This grid was built from made-up weather, not PVGIS. Run <code>npm run fetch</code> and <code>npm run build-grid</code> for real results.', true);
     }
-    $('data-source').textContent = `Grid: ${m.count.toLocaleString('en-US')} land cells at ${m.grid.resolution}°, ${m.source}${m.pvgis?.years ? `, ${m.pvgis.years[0]}–${m.pvgis.years[1]}` : ''}. Built ${m.generated.slice(0, 10)}.`;
+    const withLayers = datasets.filter((d) => d.screening).map((d) => d.name);
+    $('flt-status').textContent = withLayers.length
+      ? `Screening layers available for the ${withLayers.join(', ')} grid${withLayers.length > 1 ? 's' : ''}.`
+      : 'No screening layers built yet: run "npm run build-screening" (see README). Until then the filters have no effect.';
+    const list = countryList(datasets);
+    countries = new Map(list);
+    $('scr-scope').insertAdjacentHTML('beforeend', list.map(([id, name]) => `<option value="${id}">${name}</option>`).join(''));
+    $('data-source').textContent = datasets
+      .map((d) => {
+        const m = d.manifest;
+        return `${d.name} grid: ${m.count.toLocaleString('en-US')} land cells, ${m.source}${m.pvgis?.years ? ` ${m.pvgis.years[0]}–${m.pvgis.years[1]}` : ''}, built ${m.generated.slice(0, 10)}.`;
+      })
+      .join(' ');
+    if (withLayers.length) {
+      $('data-source').insertAdjacentHTML(
+        'afterend',
+        '<p class="muted">Screening: protected areas © OpenStreetMap contributors (ODbL); land cover ESA WorldCover 2021 (CC BY 4.0); slope from Copernicus DEM GLO-90; power grid: gridfinder, Arderne et al. 2020 (CC BY 4.0).</p>'
+      );
+    }
     await refreshMap();
   }
   if (initial.point) openPoint(initial.point[0], initial.point[1]);

@@ -13,6 +13,8 @@ export const VARIABLES = {
   poa: { label: 'In-plane irradiation (GlobInc)', unit: 'kWh/m²', ramp: 'heat', range: [700, 3300], digits: 0 },
   ghi: { label: 'Global horizontal irradiation', unit: 'kWh/m²', ramp: 'heat', range: [600, 2700], digits: 0 },
   opttilt: { label: 'Optimal tilt', unit: '°', ramp: 'blue', range: [0, 50], digits: 1 },
+  suitable: { label: 'Suitable land after filters', unit: '%', ramp: 'blue', range: [0, 100], digits: 0 },
+  grid: { label: 'Distance to power grid', unit: 'km', ramp: 'blue', range: [0, 100], digits: 1 },
 };
 
 const hexRgb = (h) => [parseInt(h.slice(1, 3), 16), parseInt(h.slice(3, 5), 16), parseInt(h.slice(5, 7), 16)];

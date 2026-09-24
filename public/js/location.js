@@ -4,7 +4,6 @@
 import { tmyFromJSON, estimateTimeShift } from './pvgis.js';
 import { prepareHourly, simulate, optimalTilt } from './model/simulate.js';
 import { lossBreakdown } from './model/losses.js';
-import { cellAt, cellCenter, cellStages } from './grid-data.js';
 import { niceTicks } from './colors.js';
 
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
@@ -20,8 +19,14 @@ export function mountLabel(m) {
 }
 
 export class LocationCard {
-  constructor({ grid, getState, onClose }) {
-    this.grid = grid;
+  /**
+   * @param gridCell   async (lat, lon, mount, params) => {stages, res, center} | null
+   * @param shiftFallback  (radiationDb) => minutes, used when the offset cannot be fitted
+   */
+  constructor({ gridCell, screenCell, shiftFallback, getState, onClose }) {
+    this.gridCell = gridCell;
+    this.screenCell = screenCell;
+    this.shiftFallback = shiftFallback;
     this.getState = getState;
     this.el = document.getElementById('loc');
     this.title = document.getElementById('loc-title');
@@ -69,7 +74,7 @@ export class LocationCard {
       const tmy = tmyFromJSON(j);
       const est = estimateTimeShift(tmy);
       const db = tmy.meta.radiationDb;
-      const fallback = this.grid?.manifest.shiftByDatabase?.[db]?.median ?? 0;
+      const fallback = this.shiftFallback?.(db) ?? 0;
       const shift = est.shift ?? fallback;
       this.hourly = prepareHourly(tmy, shift);
       this.tmyMeta = { ...tmy.meta, shift, shiftEstimated: est.shift !== null, synthetic: j.synthetic, cached: j.cached, source: j.source };
@@ -79,7 +84,7 @@ export class LocationCard {
     } catch (e) {
       if (seq !== this.seq) return;
       this.error = e.message;
-      this.setStatus(`${esc(e.message)}${this.cellPos >= 0 ? ' Showing the precomputed grid cell instead.' : ''}`, true);
+      this.setStatus(`${esc(e.message)}${this.hasCell ? ' Showing the precomputed grid cell instead.' : ''}`, true);
     }
   }
 
@@ -98,23 +103,22 @@ export class LocationCard {
 
   async renderGridCell() {
     const { lat, lon } = this.point;
-    const grid = this.grid;
-    this.cellPos = grid ? cellAt(grid, lat, lon) : -1;
-    if (this.cellPos < 0) {
-      if (!this.hourly) this.body.innerHTML = '';
-      return;
-    }
     const st = this.getState();
     const seq = this.seq;
-    const stages = await cellStages(grid, st.mount, st.params, this.cellPos);
+    const cell = this.gridCell ? await this.gridCell(lat, lon, st.mount, st.params) : null;
     if (seq !== this.seq || this.hourly) return;
-    const c = cellCenter(grid, this.cellPos);
-    const res = grid.manifest.grid.resolution;
+    this.hasCell = !!cell;
+    if (!cell) {
+      this.body.innerHTML = '';
+      return;
+    }
+    const { stages, res, center: c } = cell;
     this.sub.textContent = `${mountLabel(st.mount)} · precomputed ${res}° grid cell (centre ${coord(c.lat, c.lon)})`;
     const tilt = stages.tilt;
     this.body.innerHTML =
       this.tilesHtml(stages.avail, stages.avail / stages.inc, stages.inc, stages.ghi, tilt) +
       section('Loss diagram (annual)', lossTable(lossBreakdown(stages)));
+    this.appendScreening(seq);
   }
 
   renderLive() {
@@ -167,6 +171,30 @@ export class LocationCard {
       this.renderLive();
     });
     attachChartHover(this.body.querySelector('.chart'), main.monthly);
+    this.appendScreening(this.seq);
+  }
+
+  /** Screening layers of the grid cell under the point, if built. */
+  async appendScreening(seq) {
+    if (!this.screenCell || !this.point) return;
+    const st = this.getState();
+    const info = await this.screenCell(this.point.lat, this.point.lon, st.filters);
+    if (!info || seq !== this.seq) return;
+    const lc = info.landCover
+      .map((share, i) => ({ share, name: info.names[i] }))
+      .filter((x) => x.share >= 0.01)
+      .sort((a, b) => b.share - a.share)
+      .map((x) => `${esc(x.name)} ${fmt(x.share * 100)}%`)
+      .join(', ');
+    const html = `<dl class="provenance">
+      <dt>Suitable land</dt><dd><b>${fmt(info.suitable * 100)}%</b> of the cell (${fmt(info.suitable * info.area)} km² of ${fmt(info.area)} km²) · ${info.pass ? 'passes' : 'fails'} the filters</dd>
+      <dt>Protected</dt><dd>${fmt(info.protected * 100)}% of the land</dd>
+      <dt>Land cover</dt><dd>${lc || '–'}</dd>
+      <dt>Slope</dt><dd>${info.slope.map((v, i) => `${info.slopeLabels[i]} ${fmt(v * 100)}%`).join(', ')}</dd>
+      <dt>Power grid</dt><dd>${Number.isFinite(info.gridKm) ? `${fmt(info.gridKm, 1)} km to the nearest line (gridfinder)` : 'no line within range'}</dd>
+    </dl>`;
+    this.body.querySelector('.loc-screen')?.remove();
+    this.body.insertAdjacentHTML('beforeend', `<div class="loc-screen">${section(`Site screening (${info.res}° grid cell)`, html)}</div>`);
   }
 
   tilesHtml(yieldV, pr, inc, ghi, tilt) {

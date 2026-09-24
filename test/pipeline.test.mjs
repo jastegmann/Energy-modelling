@@ -14,10 +14,11 @@ import { encodeTmy, decodeTmy, readTmyFile } from '../scripts/lib/tmy-store.mjs'
 import { parsePvgisTmy, estimateTimeShift } from '../public/js/pvgis.js';
 import { syntheticPvgisTmy } from '../scripts/dev/synthetic-tmy.mjs';
 import { createMockPvgis } from '../scripts/dev/mock-pvgis.mjs';
-import { loadGrid, computeValues, cellAt } from '../public/js/grid-data.js';
+import { Dataset, blockResults } from '../public/js/grid-data.js';
+import { collectCells, toCsv } from '../public/js/screening.js';
 import { prepareHourly, simulate } from '../public/js/model/simulate.js';
 import { DEFAULT_PARAMS } from '../public/js/model/losses.js';
-import { cachePath } from '../scripts/lib/grid.mjs';
+import { cachePath, loadLandCells, selectCells } from '../scripts/lib/grid.mjs';
 
 const ROOT = fileURLToPath(new URL('..', import.meta.url));
 const tmp = mkdtempSync(join(tmpdir(), 'solar-map-test-'));
@@ -73,16 +74,24 @@ test('TMY store round-trips a PVGIS year', () => {
 test('fetch -> build -> browser evaluation reproduces the hourly model', async () => {
   const cache = join(tmp, 'cache');
   const out = join(tmp, 'grid');
-  const bbox = '6,45,8,47'; // Alps / Switzerland, SARAH-like mock data
-  const f = await run(['scripts/fetch-tmy.mjs', '--base', mockUrl, '--bbox', bbox, '--cache', cache, '--rate', '500']);
+  const sel = ['--countries', 'Switzerland'];
+  const f = await run(['scripts/fetch-tmy.mjs', '--base', mockUrl, ...sel, '--cache', cache, '--rate', '500']);
   assert.equal(f.status, 0, f.stderr + f.stdout);
-  assert.match(f.stdout, /Done: \d+ fetched, 0 failed/);
-  const b = await run(['scripts/build-grid.mjs', '--cache', cache, '--out', out, '--bbox', bbox, '--workers', '2']);
+  const expected = selectCells(loadLandCells(0.5), { countries: 'Switzerland' }).length;
+  assert.match(f.stdout, new RegExp(`Done: ${expected} fetched, 0 failed`));
+  const b = await run(['scripts/build-grid.mjs', '--cache', cache, '--out', out, '--workers', '2']);
   assert.equal(b.status, 0, b.stderr + b.stdout);
   const manifest = JSON.parse(readFileSync(join(out, 'manifest.json'), 'utf8'));
+  assert.equal(manifest.version, 2);
   assert.equal(manifest.synthetic, true);
   assert.equal(manifest.configs.length, 117);
   assert.equal(manifest.shiftByDatabase['PVGIS-SARAH3'].median, 10);
+  assert.ok(manifest.count >= expected); // blocks also hold cached cells of neighbouring countries, if any
+
+  // A second build reuses the unchanged blocks.
+  const again = await run(['scripts/build-grid.mjs', '--cache', cache, '--out', out, '--workers', '2']);
+  assert.equal(again.status, 0, again.stderr);
+  assert.equal(JSON.parse(readFileSync(join(out, 'manifest.json'), 'utf8')).blocks[0].sig, manifest.blocks[0].sig);
 
   // Load the grid the way the browser does (fetch of relative URLs).
   const realFetch = globalThis.fetch;
@@ -92,24 +101,35 @@ test('fetch -> build -> browser evaluation reproduces the hourly model', async (
     return new Response(readFileSync(p));
   };
   try {
-    const grid = await loadGrid('grid/');
-    assert.equal(grid.M, manifest.count);
+    const ds = new Dataset('grid/', manifest);
+    const [id] = ds.blockIdsIn(46.75, 8.25, 46.75, 8.25);
+    const block = await ds.block(id);
+    const hit = ds.lookup(46.75, 8.25);
+    assert.ok(hit && hit.block === block);
     const mounts = [
       { type: 'fixed', tilt: 35, gcr: 0.4 },
       { type: 'fixed', tilt: 32, gcr: 0 }, // interpolated between 30° and 35°
       { type: 'ew', tilt: 10, gcr: 0.85 },
       { type: 'tracker', limit: 55, gcr: 0.35, backtrack: true },
     ];
-    const pos = cellAt(grid, 46.25, 7.25);
-    assert.ok(pos >= 0);
-    const { tmy } = readTmyFile(cachePath(cache, grid.cells[pos], 720));
+    const { tmy } = readTmyFile(cachePath(cache, block.cells[hit.pos], 720));
     const h = prepareHourly(tmy, estimateTimeShift(tmy).shift);
     for (const m of mounts) {
-      const v = await computeValues(grid, m, DEFAULT_PARAMS, 'yield');
+      const v = (await blockResults(block, m, DEFAULT_PARAMS)).yield[hit.pos];
       const exact = simulate(h, m, DEFAULT_PARAMS).yield;
       const tol = m.tilt === 32 ? 0.005 : 0.001; // interpolation vs quantisation only
-      assert.ok(Math.abs(v[pos] / exact - 1) < tol, `${JSON.stringify(m)}: grid ${v[pos]} vs hourly ${exact}`);
+      assert.ok(Math.abs(v / exact - 1) < tol, `${JSON.stringify(m)}: grid ${v} vs hourly ${exact}`);
     }
+
+    // Screening: all Swiss cells, ranked by specific yield.
+    const swiss = 756;
+    const res = await collectCells([ds], { type: 'country', id: swiss }, mounts[0], DEFAULT_PARAMS);
+    assert.equal(res.rows.length, expected);
+    assert.ok(res.rows.every((r, i) => r.country === swiss && (i === 0 || r.yield <= res.rows[i - 1].yield)));
+    const csv = toCsv(res, new Map([[swiss, 'Switzerland']]), mounts[0], DEFAULT_PARAMS).split('\n');
+    const header = csv.findIndex((l) => l.startsWith('rank,'));
+    assert.equal(csv.length, header + 1 + expected);
+    assert.match(csv[header + 1], /^1,\d+\.\d+,\d+\.\d+,Switzerland,/);
   } finally {
     globalThis.fetch = realFetch;
   }

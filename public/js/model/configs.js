@@ -22,13 +22,19 @@ export function configId(m) {
   throw new Error(`Unknown mount type ${m.type}`);
 }
 
-/** All configurations of the precomputed grid (deduplicated). */
-export function gridConfigs() {
+/**
+ * Configurations of a precomputed grid (deduplicated).
+ *   full:     every option of the side panel (117 configurations)
+ *   standard: the most common layouts only (39 configurations), for fine grids
+ *             where the full set would be too large to host. Where a fine grid
+ *             lacks the selected configuration, the map falls back to a coarser one.
+ */
+export function gridConfigs(set = 'full') {
   const list = [];
   const seen = new Set();
   const add = (m) => {
     const id = configId(m);
-    if (!seen.has(id)) {
+    if (!seen.has(id) && (set === 'full' || inStandardSet(m))) {
       seen.add(id);
       list.push({ id, ...m });
     }
@@ -42,6 +48,24 @@ export function gridConfigs() {
     }
   }
   return list;
+}
+
+function inStandardSet(m) {
+  if (m.type === 'fixed') return m.gcr === 0 || m.gcr === 0.4;
+  if (m.type === 'ew') return m.tilt <= 20 && (m.gcr === 0 || m.gcr === 0.85);
+  return (m.limit === 55 || m.limit === 60) && (m.gcr === 0 || (m.backtrack && (m.gcr === 0.35 || m.gcr === 0.4)));
+}
+
+/** Grids are stored in square blocks so that the browser loads only what is in view. */
+export function blockDegrees(res) {
+  return res >= 0.5 ? 30 : res >= 0.1 ? 10 : 5;
+}
+
+/** Block id of a grid cell index. */
+export function blockOf(idx, res) {
+  const nx = Math.round(360 / res);
+  const cpb = Math.round(blockDegrees(res) / res);
+  return `r${Math.floor(Math.floor(idx / nx) / cpb)}c${Math.floor((idx % nx) / cpb)}`;
 }
 
 /** Stored per-configuration fields and their quantisation (value = raw * scale). */
@@ -65,4 +89,5 @@ export const STATIC_FIELDS = [
   { name: 'shift', type: 'int16', scale: 1 }, // time-stamp offset used, minutes
   { name: 'db', type: 'uint16', scale: 1 }, // index into manifest.databases
   { name: 'elevation', type: 'int16', scale: 1 }, // m
+  { name: 'country', type: 'uint16', scale: 1 }, // ISO 3166-1 numeric (see manifest.countries)
 ];

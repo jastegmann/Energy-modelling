@@ -8,11 +8,16 @@ land areas. The yield comes from **PVGIS** typical-meteorological-year (TMY) irr
   single-axis tracker (horizontal N–S axis, tracking east to west, with or without backtracking). You can
   also set the row spacing (GCR), albedo, IAM, thermal parameters and system losses. The heatmap updates
   instantly.
-- **Map:** a heatmap on a precomputed global 0.5° grid (≈67,000 land cells) of specific yield, performance
-  ratio, in-plane irradiation, GHI or optimal tilt. Hover to read values.
+- **Map:** a heatmap of specific yield, performance ratio, in-plane irradiation, GHI or optimal tilt on
+  precomputed grids. You can combine several resolutions, e.g. a 0.5° world grid, a 0.1° Africa grid and
+  0.05° grids for selected countries. The finest grid available is drawn on top, and grids load in blocks
+  as they come into view. Hover to read values.
 - **Click any location:** the site fetches that point's TMY from PVGIS live and runs the full hourly
   simulation. It shows the annual yield, PR, monthly yields, a PVsyst-like loss diagram, a comparison of
   all mounting types, and where the data came from.
+- **Site screening:** filter land by protected areas, land cover, slope and distance to the power grid.
+  Then rank all grid cells of a country, or of the current map view, by specific yield for the current
+  inputs. You can jump to any of the top cells and export every cell as CSV.
 
 ```
 ┌───────────────┬────────────────────────────────────────────────┐
@@ -27,47 +32,121 @@ land areas. The yield comes from **PVGIS** typical-meteorological-year (TMY) irr
 
 ## Quick start
 
-Requirements: **Node.js 20+** (22 recommended). The site needs no npm packages at run time.
+Requirements: **Node.js 22.13+** (24 recommended). The site needs no npm packages at run time.
 
 ```bash
 npm start                 # http://localhost:8080
 ```
 
 Clicking the map works straight away, because the local server relays each request to the PVGIS API.
-The PVGIS API cannot be called directly from a browser, which is why a server is needed. The global
-heatmap needs a one-off precomputation:
+The PVGIS API cannot be called directly from a browser, which is why a server is needed. The heatmap
+needs a one-off precomputation per resolution: `fetch` downloads the PVGIS data, and `build-grid` runs
+the model.
 
 ```bash
-npm run fetch             # download PVGIS TMY for all 0.5° land cells (resumable)
-npm run build-grid        # run the model for every cell × mounting configuration
+npm run fetch                               # world, 0.5°
+npm run build-grid
+
+npm run fetch -- --res 0.1 --region africa  # Africa, 0.1°
+npm run build-grid -- --res 0.1
+
+npm run fetch -- --res 0.05 --countries "Kenya,Tanzania"   # detailed country grids, 0.05°
+npm run build-grid -- --res 0.05
 npm start
 ```
 
-| Step | Work | Typical time | Disk |
-|---|---|---|---|
-| `npm run fetch` (0.5°) | ≈67k PVGIS requests at ≤20 req/s | 2–5 h, depends on PVGIS response times | ≈3 GB in `cache/` |
-| `npm run build-grid` | 67k cells × 117 configurations | ≈15–40 min, depends on CPU cores | ≈40–80 MB in `public/data/grid/` |
+| Grid | PVGIS requests | Fetch time* | Build time** | Cache | Grid files |
+|---|---|---|---|---|---|
+| World 0.5° | ≈ 67,000 | 3–6 h | 30–90 min | ≈ 3 GB | ≈ 60–90 MB |
+| Africa 0.5° (`--region africa`) | ≈ 10,600 | 30–60 min | 5–15 min | ≈ 0.5 GB | ≈ 10–15 MB |
+| Africa 0.1° | ≈ 258,000 | 12–24 h | 1–3 h | ≈ 12 GB | ≈ 80–120 MB |
+| Africa 0.05° | ≈ 1,030,000 | 2–5 days | 5–12 h | ≈ 46 GB | ≈ 300–450 MB |
+| Kenya 0.05° | ≈ 19,000 | 1–2 h | 10–20 min | ≈ 0.9 GB | ≈ 5–10 MB |
+
+\* PVGIS allows at most 30 requests/s; the default stays at ≤ 20/s, and actual throughput depends on
+PVGIS response times. \*\* Depends on the number of CPU cores.
+
+Grids finer than 0.5° use the **standard configuration set** (39 of the 117 mounting layouts) to keep the
+files small:
+- fixed tilt 0–60° with isolated rows or GCR 0.4
+- east–west 5–20° isolated or at GCR 0.85
+- trackers ±55°/±60°, isolated or backtracking at GCR 0.35/0.4
+
+For any other layout the map falls back to the next coarser grid, and the legend says so. Use
+`--configs full` to build all 117.
 
 Tips:
-- **Try a region first:** `npm run fetch -- --bbox -10,35,30,60`, then
-  `npm run build-grid -- --bbox -10,35,30,60`. The bbox is `lonMin,latMin,lonMax,latMax`.
-- **Quick coarse world map:** `npm run fetch -- --res 2 && npm run build-grid -- --res 2` needs about 4,800
-  requests. 1° and 2° land masks are included.
+- **Select an area** with `--region africa`, `--countries "Kenya,Nigeria"` (Natural Earth names, e.g.
+  "Dem. Rep. Congo", "Côte d'Ivoire", "S. Sudan") or `--bbox=lonMin,latMin,lonMax,latMax`. Always attach
+  `--bbox` with `=`, because a leading minus sign would otherwise be read as a new option.
+- **Land masks** for the world (0.5°, 1°, 2°) and for Africa (0.1°, 0.05°) are included. For other areas at
+  0.1° or 0.05°, run `npm install` and then `npm run land-mask -- --res 0.05 --countries "Chile"`.
+- **Incremental builds:** `build-grid` stores each grid in blocks (30° / 10° / 5°). Blocks whose cells have
+  not changed are reused, so after fetching another country only the new blocks are computed. Use
+  `--force` to recompute everything, or `--clean` to start the dataset from scratch.
 - The fetch can be stopped with Ctrl‑C and restarted at any time. Cells already in `cache/` are skipped.
   Failed cells are listed in `cache/tmy/<res>/failed.json`, and you can retry them with `--retry-failed`.
 - Behind an HTTP proxy, run the scripts and the server with `NODE_USE_ENV_PROXY=1` (Node ≥ 22.21 / 24).
 - To see the UI without PVGIS: `npm run build-grid -- --synthetic --res 2` builds a grid from made‑up
   weather. The site then shows a prominent "synthetic data" warning.
 
+### Site-screening layers (optional)
+
+The screening filters (protected areas, land cover, slope, distance to the power grid) need a second
+precomputation for each grid you built:
+
+```bash
+npm install                                              # once: installs the GeoTIFF reader
+npm run build-screening -- --res 0.1 --region africa
+npm run build-screening -- --res 0.05 --countries "Kenya"
+```
+
+| Layer | Source | Licence | How it is read |
+|---|---|---|---|
+| Protected areas | OpenStreetMap: `boundary=protected_area` (nature classes 1–19, 97–99), `boundary=national_park`, `leisure=nature_reserve` | ODbL, commercial use allowed with attribution | Overpass API, one query per country |
+| Land cover | ESA WorldCover 10 m 2021 v200 | CC BY 4.0 | Cloud-optimised GeoTIFFs; only the ~150 m overview is read |
+| Slope | Copernicus DEM GLO-90 | Free, including commercial use (Copernicus licence) | Cloud-optimised GeoTIFFs, ~185 m overview |
+| Distance to grid | gridfinder (Arderne et al. 2020), modelled medium-voltage network | CC BY 4.0 | `grid.gpkg` from Zenodo |
+
+For every grid cell, the script stores the share of the cell's land in each combination of:
+- protected yes/no
+- 11 land-cover classes
+- 5 slope classes (0–3°, 3–5°, 5–10°, 10–15°, >15°)
+
+It also stores the distance from the cell centre to the nearest gridfinder line. The page combines these
+with your filter choices exactly: for example, "not protected, not forest or built-up, slope ≤ 10°". The
+map can show **suitable land (%)** or **distance to grid**, or hide cells that fail the filters. Rankings
+and CSV exports then include only passing cells, with suitable area (km²), protected share and grid
+distance.
+
+Notes:
+- **Time and data volume:** for all of Africa, expect about 3,000 one-degree tiles, a few GB of downloads
+  and 1–3 hours. Results are cached per tile in `cache/screening/`, so the script can be stopped and
+  restarted, and other resolutions reuse them.
+- **gridfinder download:** the network is downloaded once from Zenodo. If that fails, download `grid.gpkg`
+  from <https://zenodo.org/records/3628142> and pass `--gridfinder path/to/grid.gpkg`.
+- **Overpass limits:** Overpass is a shared public service. Large countries can take several minutes and
+  are retried automatically; use `--overpass <url>` for another instance.
+- **Limitations:**
+  - gridfinder lines are *predicted*, not surveyed.
+  - OpenStreetMap protected-area coverage varies by country.
+  - Land cover and slope at ~150–185 m are meant for screening, not site design.
+- **Attribution** when publishing results: © OpenStreetMap contributors; ESA WorldCover project 2021 /
+  Contains modified Copernicus Sentinel data (2021); Copernicus DEM © DLR e.V. 2010–2014 and © Airbus
+  Defence and Space GmbH 2014–2018, provided under COPERNICUS by the EU and ESA; gridfinder, Arderne et
+  al. (2020), Scientific Data 7:19.
+
 ### Hosting
 
 **GitHub Pages:** `.github/workflows/pages.yml` runs the tests and publishes `public/` on every push to
 `main`. First, enable it once under the repository's Settings → Pages → Source: **GitHub Actions**. Then
-build the grid locally, remove `public/data/grid/` from `.gitignore`, and commit the grid.
+build the grids locally, remove `public/data/grids/` from `.gitignore`, and commit them. GitHub Pages
+sites are limited to about 1 GB. The 0.5° world grid, the 0.1° Africa grid and several 0.05° countries fit
+comfortably. A 0.05° grid of all of Africa also fits, but it makes the repository large and slow to push.
 
 
-`public/` is a static site. The heatmap works on any static host, e.g. GitHub Pages, after you remove
-`public/data/grid/` from `.gitignore` and commit the grid. Live location analysis needs `server.mjs` (or
+`public/` is a static site. The heatmap and screening work on any static host, e.g. GitHub Pages, once the
+grids in `public/data/grids/` are committed. Live location analysis needs `server.mjs` (or
 an equivalent relay) running on the same origin. Without it, clicking the map shows the precomputed
 grid-cell values instead.
 
@@ -205,19 +284,27 @@ public/                     the website (no build step)
   index.html, css/app.css
   js/app.js                 UI wiring, map, URL state
   js/heat-layer.js          Leaflet canvas layer painting the grid
-  js/grid-data.js           loading/decoding the grid, heatmap evaluation
+  js/grid-data.js           grids (datasets and blocks): loading, evaluation
   js/grid-codec.js          compact grid file encoding
   js/location.js            location card (live hourly simulation)
+  js/screening.js           ranking by country / map view, CSV export
+  js/screening-layers.js    screening layer format and filter evaluation
   js/pvgis.js               PVGIS TMY parsing and time alignment
   js/model/                 solar position, Perez, IAM, geometry, simulation, losses, grid configs
   vendor/leaflet/           Leaflet 1.9.4 (BSD-2-Clause)
 scripts/
-  build-land-mask.mjs       land cells from Natural Earth (world-atlas)
+  build-land-mask.mjs       land cells and countries from Natural Earth (world-atlas)
+  lib/regions.mjs           country groupings (Africa)
   fetch-tmy.mjs             resumable, rate-limited PVGIS download
   build-grid.mjs            multi-threaded grid precomputation
+  build-screening.mjs       protected areas, land cover, slope, grid distance per cell
+  lib/raster.mjs            windowed reads of cloud-optimised GeoTIFFs
+  lib/osm-protected.mjs     OpenStreetMap protected areas via Overpass
+  lib/gpkg-lines.mjs        GeoPackage lines and nearest-line distances
   dev/mock-pvgis.mjs        mock PVGIS server with SYNTHETIC data (tests, offline development)
+  dev/mock-screening-sources.mjs  SYNTHETIC WorldCover/DEM tiles, Overpass and gridfinder stand-ins
   dev/make-pvlib-fixtures.py  pvlib reference values for the tests
-data/land-cells-*.json      land masks (0.5°, 1°, 2°)
+data/land-cells-*.json[.gz]  land masks with country per cell (world 0.5°/1°/2°, Africa 0.1°/0.05°)
 test/                       node:test suite (model vs pvlib, pipeline end-to-end)
 ```
 
@@ -235,4 +322,5 @@ pip install pvlib && python scripts/dev/make-pvlib-fixtures.py   # regenerate re
 - Irradiance and weather: PVGIS © European Union, 2001–2026. Reuse is authorised provided the source is
   acknowledged.
 - Map tiles and data: © OpenStreetMap contributors (ODbL).
-- Land mask: Natural Earth (public domain) via `world-atlas`.
+- Land mask and countries: Natural Earth (public domain) via `world-atlas`.
+- Screening layers: see the attribution list under "Site-screening layers".

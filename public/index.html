@@ -35,6 +35,8 @@
             <option value="poa">In-plane irradiation, GlobInc (kWh/m²)</option>
             <option value="ghi">Global horizontal irradiation (kWh/m²)</option>
             <option value="opttilt">Optimal tilt (°)</option>
+            <option value="suitable">Suitable land after filters (%)</option>
+            <option value="grid">Distance to power grid (km)</option>
           </select>
         </label>
         <div class="row2">
@@ -96,6 +98,58 @@
           </label>
           <label class="check"><input id="trk-bt" type="checkbox" checked> Backtracking</label>
         </div>
+      </section>
+
+      <section class="group" id="screening">
+        <h2>Site screening</h2>
+        <label class="field">
+          <span>Area</span>
+          <select id="scr-scope">
+            <option value="view">Current map view</option>
+          </select>
+        </label>
+        <details class="filters" id="scr-filters">
+          <summary>Filters <span id="flt-summary" class="muted"></span></summary>
+          <p class="hint" id="flt-status"></p>
+          <label class="check"><input id="flt-prot" type="checkbox"> Exclude protected areas (OpenStreetMap)</label>
+          <div class="field">
+            <span>Allowed land cover (ESA WorldCover)</span>
+            <div id="flt-lc" class="lc-grid"></div>
+          </div>
+          <div class="row2">
+            <label class="field">
+              <span>Maximum slope</span>
+              <select id="flt-slope">
+                <option value="3">3°</option>
+                <option value="5">5°</option>
+                <option value="10">10°</option>
+                <option value="15">15°</option>
+                <option value="0">No limit</option>
+              </select>
+            </label>
+            <label class="field">
+              <span>Max. distance to grid</span>
+              <select id="flt-grid">
+                <option value="0">No limit</option>
+                <option value="5">5 km</option>
+                <option value="10">10 km</option>
+                <option value="20">20 km</option>
+                <option value="50">50 km</option>
+                <option value="100">100 km</option>
+              </select>
+            </label>
+          </div>
+          <label class="field">
+            <span>Minimum suitable land in a cell <output id="flt-min-out">10%</output></span>
+            <input id="flt-min" type="range" min="0" max="100" step="5" value="10">
+          </label>
+          <label class="check"><input id="flt-hide" type="checkbox"> Hide cells that fail the filters on the map</label>
+        </details>
+        <div class="scr-actions">
+          <button id="scr-rank" type="button" class="btn">Rank by specific yield</button>
+          <button id="scr-csv" type="button" class="btn-ghost">Export CSV</button>
+        </div>
+        <div id="scr-out" aria-live="polite"></div>
       </section>
 
       <details class="group" id="grp-module">

@@ -5,7 +5,7 @@
   "description": "Global map of PV specific yield (kWh/kWp) from PVGIS TMY data with a PVsyst-style Perez model",
   "type": "module",
   "engines": {
-    "node": ">=20"
+    "node": ">=22.13"
   },
   "scripts": {
     "start": "node server.mjs",
@@ -13,11 +13,16 @@
     "fetch": "node scripts/fetch-tmy.mjs",
     "build-grid": "node scripts/build-grid.mjs",
     "mock-pvgis": "node scripts/dev/mock-pvgis.mjs",
-    "test": "node --test test/*.test.mjs"
+    "test": "node --disable-warning=ExperimentalWarning --test test/*.test.mjs",
+    "build-screening": "node --disable-warning=ExperimentalWarning scripts/build-screening.mjs",
+    "mock-screening": "node --disable-warning=ExperimentalWarning scripts/dev/mock-screening-sources.mjs"
   },
   "devDependencies": {
     "topojson-client": "^3.1.0",
     "world-atlas": "^2.0.2"
   },
-  "license": "MIT"
+  "license": "MIT",
+  "dependencies": {
+    "geotiff": "^3.0.5"
+  }
 }
