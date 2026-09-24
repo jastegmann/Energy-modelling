@@ -49,8 +49,8 @@ npm start
 | `npm run build-grid` | 67k cells × 117 configurations | ≈15–40 min, depends on CPU cores | ≈40–80 MB in `public/data/grid/` |
 
 Tips:
-- **Try a region first:** `npm run fetch -- --bbox -10,35,30,60`, then
-  `npm run build-grid -- --bbox -10,35,30,60`. The bbox is `lonMin,latMin,lonMax,latMax`.
+- **Try a region first:** `npm run fetch -- --bbox=-10,35,30,60`, then
+  `npm run build-grid -- --bbox=-10,35,30,60`. The bbox is `lonMin,latMin,lonMax,latMax`. Always attach it with `=`, because a leading minus sign would otherwise be read as a new option.
 - **Quick coarse world map:** `npm run fetch -- --res 2 && npm run build-grid -- --res 2` needs about 4,800
   requests. 1° and 2° land masks are included.
 - The fetch can be stopped with Ctrl‑C and restarted at any time. Cells already in `cache/` are skipped.

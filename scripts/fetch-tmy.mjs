@@ -3,7 +3,7 @@
 // Resumable: cells already in the cache are skipped, so it can be stopped
 // (Ctrl-C) and restarted at any time.
 //
-//   node scripts/fetch-tmy.mjs [--res 0.5] [--bbox lonMin,latMin,lonMax,latMax]
+//   node scripts/fetch-tmy.mjs [--res 0.5] [--bbox=lonMin,latMin,lonMax,latMax]
 //        [--concurrency 8] [--rate 20] [--limit N] [--retry-failed]
 //        [--base https://re.jrc.ec.europa.eu/api/v5_3] [--startyear Y --endyear Y]
 //
