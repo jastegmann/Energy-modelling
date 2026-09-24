@@ -61,6 +61,11 @@ Tips:
 
 ### Hosting
 
+**GitHub Pages:** `.github/workflows/pages.yml` runs the tests and publishes `public/` on every push to
+`main`. First, enable it once under the repository's Settings → Pages → Source: **GitHub Actions**. Then
+build the grid locally, remove `public/data/grid/` from `.gitignore`, and commit the grid.
+
+
 `public/` is a static site. The heatmap works on any static host, e.g. GitHub Pages, after you remove
 `public/data/grid/` from `.gitignore` and commit the grid. Live location analysis needs `server.mjs` (or
 an equivalent relay) running on the same origin. Without it, clicking the map shows the precomputed
