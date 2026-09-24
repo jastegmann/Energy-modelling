@@ -1,0 +1,7 @@
+node_modules/
+# Downloaded PVGIS TMY files (several GB for the full 0.5° grid)
+cache/
+# Generated grid. Remove this line if you want to commit the grid to publish
+# the map as a static site (e.g. GitHub Pages).
+public/data/grid/
+.DS_Store

@@ -1,0 +1,151 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Solar Yield Map</title>
+  <meta name="description" content="Global map of photovoltaic specific yield (kWh/kWp) from PVGIS TMY data, with Perez transposition and a PVsyst-style loss chain.">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='16' r='7' fill='%23fd8d3c'/%3E%3Cg stroke='%23fd8d3c' stroke-width='2.5' stroke-linecap='round'%3E%3Cpath d='M16 2v4M16 26v4M2 16h4M26 16h4M6 6l3 3M23 23l3 3M6 26l3-3M23 9l3-3'/%3E%3C/g%3E%3C/svg%3E">
+  <link rel="stylesheet" href="vendor/leaflet/leaflet.css">
+  <link rel="stylesheet" href="css/app.css">
+</head>
+<body>
+  <div id="app">
+    <aside id="panel" aria-label="Inputs">
+      <header class="panel-head">
+        <div class="brand">
+          <svg class="brand-mark" viewBox="0 0 32 32" aria-hidden="true"><circle cx="16" cy="16" r="6.5"/><g><path d="M16 2.5v4M16 25.5v4M2.5 16h4M25.5 16h4M6.4 6.4l2.8 2.8M22.8 22.8l2.8 2.8M6.4 25.6l2.8-2.8M22.8 9.2l2.8-2.8"/></g></svg>
+          <div>
+            <h1>Solar Yield Map</h1>
+            <p class="sub">PV specific yield from PVGIS TMY · Perez transposition</p>
+          </div>
+        </div>
+        <button id="panel-close" class="icon-btn only-mobile" aria-label="Close inputs">✕</button>
+      </header>
+
+      <div id="data-banner" class="banner" hidden></div>
+
+      <section class="group">
+        <h2>Map layer</h2>
+        <label class="field">
+          <span>Show</span>
+          <select id="variable">
+            <option value="yield">Specific yield (kWh/kWp)</option>
+            <option value="pr">Performance ratio (%)</option>
+            <option value="poa">In-plane irradiation, GlobInc (kWh/m²)</option>
+            <option value="ghi">Global horizontal irradiation (kWh/m²)</option>
+            <option value="opttilt">Optimal tilt (°)</option>
+          </select>
+        </label>
+        <div class="row2">
+          <label class="field">
+            <span>Colour scale</span>
+            <select id="scale-mode">
+              <option value="fixed">Fixed range</option>
+              <option value="auto">Fit to data</option>
+            </select>
+          </label>
+          <label class="field">
+            <span>Opacity <output id="opacity-out">75%</output></span>
+            <input id="opacity" type="range" min="20" max="100" step="5" value="75">
+          </label>
+        </div>
+        <label class="check"><input id="smooth" type="checkbox"> Smooth between grid cells</label>
+      </section>
+
+      <section class="group">
+        <h2>Mounting structure</h2>
+        <div class="segmented" role="radiogroup" aria-label="Mounting structure">
+          <button type="button" role="radio" data-mount="fixed" aria-checked="true">Fixed tilt</button>
+          <button type="button" role="radio" data-mount="ew" aria-checked="false">East–West</button>
+          <button type="button" role="radio" data-mount="tracker" aria-checked="false">1-axis tracker</button>
+        </div>
+        <p class="hint" id="mount-hint"></p>
+
+        <div class="mount-opts" data-for="fixed">
+          <label class="check"><input id="fixed-opt" type="checkbox"> Optimal tilt for each location</label>
+          <label class="field" id="fixed-tilt-field">
+            <span>Tilt <output id="fixed-tilt-out">25°</output></span>
+            <input id="fixed-tilt" type="range" min="0" max="60" step="1" value="25">
+          </label>
+          <label class="field">
+            <span>Row layout (ground coverage ratio)</span>
+            <select id="fixed-gcr"></select>
+          </label>
+        </div>
+
+        <div class="mount-opts" data-for="ew" hidden>
+          <label class="field">
+            <span>Tilt of each face <output id="ew-tilt-out">10°</output></span>
+            <input id="ew-tilt" type="range" min="5" max="30" step="1" value="10">
+          </label>
+          <label class="field">
+            <span>Row layout (ground coverage ratio)</span>
+            <select id="ew-gcr"></select>
+          </label>
+        </div>
+
+        <div class="mount-opts" data-for="tracker" hidden>
+          <label class="field">
+            <span>Rotation limit</span>
+            <select id="trk-limit"></select>
+          </label>
+          <label class="field">
+            <span>Row layout (ground coverage ratio)</span>
+            <select id="trk-gcr"></select>
+          </label>
+          <label class="check"><input id="trk-bt" type="checkbox" checked> Backtracking</label>
+        </div>
+      </section>
+
+      <details class="group" id="grp-module">
+        <summary><h2>Irradiance, optics &amp; thermal</h2></summary>
+        <div class="params" data-params="albedo,b0,gamma,effStc,alpha,uc,uv"></div>
+      </details>
+
+      <details class="group" id="grp-losses">
+        <summary><h2>System losses</h2></summary>
+        <div class="params" data-params="soiling,lid,quality,mismatch,dcWiring,inverterEff,acLoss,unavailability"></div>
+      </details>
+
+      <div class="panel-actions">
+        <button id="reset" type="button" class="btn-ghost">Reset all inputs</button>
+      </div>
+
+      <footer class="panel-foot">
+        <p>Click anywhere on land for an hourly simulation of that location. The data is fetched live from PVGIS.</p>
+        <p id="data-source" class="muted"></p>
+        <p class="muted">Irradiance: <a href="https://joint-research-centre.ec.europa.eu/photovoltaic-geographical-information-system-pvgis_en" target="_blank" rel="noopener">PVGIS</a> © European Union. Map: © <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a> contributors.</p>
+      </footer>
+    </aside>
+
+    <main id="map-wrap">
+      <div id="map" role="application" aria-label="World map"></div>
+      <button id="panel-open" class="icon-btn floating only-mobile" aria-label="Open inputs">☰ Inputs</button>
+      <div id="loading" class="map-chip" hidden>Loading grid…</div>
+      <div id="hover" class="map-chip hover-chip" hidden></div>
+      <div id="legend" class="legend" hidden>
+        <div class="legend-title" id="legend-title"></div>
+        <div class="legend-bar" id="legend-bar"></div>
+        <div class="legend-ticks" id="legend-ticks"></div>
+        <div class="legend-note" id="legend-note"></div>
+      </div>
+
+      <section id="loc" class="loc-card" hidden aria-live="polite">
+        <header class="loc-head">
+          <div>
+            <h2 id="loc-title">Location</h2>
+            <p id="loc-sub" class="muted"></p>
+          </div>
+          <button id="loc-close" class="icon-btn" aria-label="Close location details">✕</button>
+        </header>
+        <div id="loc-status" class="loc-status"></div>
+        <div id="loc-body"></div>
+      </section>
+    </main>
+  </div>
+
+  <script src="vendor/leaflet/leaflet.js"></script>
+  <script type="module" src="js/app.js"></script>
+</body>
+</html>

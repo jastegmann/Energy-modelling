@@ -1,0 +1,23 @@
+{
+  "name": "solar-yield-map",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Global map of PV specific yield (kWh/kWp) from PVGIS TMY data with a PVsyst-style Perez model",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "node server.mjs",
+    "land-mask": "node scripts/build-land-mask.mjs",
+    "fetch": "node scripts/fetch-tmy.mjs",
+    "build-grid": "node scripts/build-grid.mjs",
+    "mock-pvgis": "node scripts/dev/mock-pvgis.mjs",
+    "test": "node --test test/*.test.mjs"
+  },
+  "devDependencies": {
+    "topojson-client": "^3.1.0",
+    "world-atlas": "^2.0.2"
+  },
+  "license": "MIT"
+}
