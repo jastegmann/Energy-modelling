@@ -1,7 +1,8 @@
 node_modules/
 # Downloaded PVGIS TMY files (several GB for the full 0.5° grid)
 cache/
-# Generated grid. Remove this line if you want to commit the grid to publish
+# Generated grids and power-line tiles. Remove these lines to commit them and publish
 # the map as a static site (e.g. GitHub Pages).
 public/data/grids/
+public/data/gridlines/
 .DS_Store

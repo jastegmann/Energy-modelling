@@ -7,7 +7,7 @@ import { FIXED_TILTS, configId } from './model/configs.js';
 import { unpackFields, GRID_ENCODING } from './grid-codec.js';
 import { decodeScreenBlock, alignScreen, evaluateFilters, protectedShare } from './screening-layers.js';
 
-async function loadBinary(url) {
+export async function loadBinary(url) {
   const r = await fetch(url);
   if (!r.ok) throw new Error(`${url}: HTTP ${r.status}`);
   const buf = await r.arrayBuffer();

@@ -14,6 +14,7 @@
     "build-grid": "node scripts/build-grid.mjs",
     "mock-pvgis": "node scripts/dev/mock-pvgis.mjs",
     "test": "node --disable-warning=ExperimentalWarning --test test/*.test.mjs",
+    "build-grid-lines": "node --disable-warning=ExperimentalWarning scripts/build-grid-lines.mjs",
     "build-screening": "node --disable-warning=ExperimentalWarning scripts/build-screening.mjs",
     "mock-screening": "node --disable-warning=ExperimentalWarning scripts/dev/mock-screening-sources.mjs"
   },

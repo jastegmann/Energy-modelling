@@ -139,3 +139,41 @@ test('build-screening writes layers that reflect the sources', async () => {
   const meta = JSON.parse(readFileSync(join(grids, '0.1', 'screening.json'), 'utf8'));
   assert.deepEqual(meta.blocks, [files[0].replace('.bin.gz', '')]);
 });
+
+test('power-line tiles: codec, clipping and build-grid-lines', async () => {
+  const { encodeLines, decodeLines } = await import('../public/js/grid-lines-codec.js');
+  const { clipPolyline, simplify } = await import('../scripts/lib/lines.mjs');
+  const line = [10.123456, -3.5, 10.9, -3.25, 11.7, -2.1];
+  const [back] = decodeLines(encodeLines([line], 10, -4, 1e-5), 10, -4, 1e-5);
+  line.forEach((v, i) => assert.ok(Math.abs(back[i] - v) < 1e-5));
+  // A line crossing the box twice becomes two pieces with the crossing points.
+  const pieces = clipPolyline([-1, 0.5, 0.5, 0.5, 0.5, 2, 0.8, 0.5, 2, 0.5], 0, 0, 1, 1);
+  assert.equal(pieces.length, 2);
+  assert.deepEqual(pieces[0], [0, 0.5, 0.5, 0.5, 0.5, 1]);
+  [0.7, 1, 0.8, 0.5, 1, 0.5].forEach((v, i) => assert.ok(Math.abs(pieces[1][i] - v) < 1e-12, `${pieces[1]}`));
+  assert.deepEqual(simplify([0, 0, 1, 0.001, 2, 0], 0.01), [0, 0, 2, 0]);
+
+  const gpkg = join(tmp, 'lines.gpkg');
+  makeGridGpkg(gpkg, { west: 30, south: -5, east: 40, north: 5 });
+  const out = join(tmp, 'gridlines');
+  const r = await new Promise((resolve) => {
+    const p = spawn('node', ['--disable-warning=ExperimentalWarning', 'scripts/build-grid-lines.mjs', '--gridfinder', gpkg, '--bbox=33,-2,37,2', '--out', out], { cwd: ROOT });
+    let o = '';
+    p.stdout.on('data', (d) => (o += d));
+    p.stderr.on('data', (d) => (o += d));
+    p.on('close', (status) => resolve({ status, o }));
+  });
+  assert.equal(r.status, 0, r.o);
+  const index = JSON.parse(readFileSync(join(out, 'index.json'), 'utf8'));
+  assert.equal(index.levels.length, 3);
+  // Full-detail tile north-east of (0 N, 34 E): holds the equator line (lat 0) and the 34° E meridian, clipped to the tile.
+  const lv = index.levels[2];
+  assert.ok(lv.tiles.includes('0_34'));
+  const lines = decodeLines(gunzipSync(readFileSync(join(out, lv.path, '0_34.bin.gz'))), 34, 0, lv.quantum);
+  const horiz = lines.find((l) => Math.abs(l[1]) < 1e-9 && Math.abs(l[3]) < 1e-9);
+  const vert = lines.find((l) => Math.abs(l[0] - 34) < 1e-9 && Math.abs(l[2] - 34) < 1e-9);
+  assert.ok(horiz && Math.min(horiz[0], horiz[2]) === 34 && Math.max(horiz[0], horiz[2]) === 35);
+  assert.ok(vert && Math.min(vert[1], vert[3]) === 0 && Math.max(vert[1], vert[3]) === 1);
+  // Nothing outside the requested box.
+  assert.ok(lv.tiles.every((id) => { const [a, b] = id.split('_').map(Number); return a >= -2 && a < 2 && b >= 33 && b < 37; }));
+});
