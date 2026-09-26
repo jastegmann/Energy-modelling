@@ -8,6 +8,7 @@
 import { loadBinary } from './grid-data.js';
 import { decodeLines, lineTileId } from './grid-lines-codec.js';
 import { VOLTAGE_CLASSES, PLANT_SOURCES } from './power.js';
+import { GEM_TECHS, GEM_STATUSES } from './gem-plants.js';
 
 const RAD = Math.PI / 180;
 const TILE_CACHE_SIZE = 400;
@@ -183,7 +184,7 @@ export function createLineLayer(L, base, levels, style, options = {}) {
 
 /**
  * Canvas layer for point symbols. items: arrays whose first two values are lon, lat.
- * symbol(item, zoom) -> { shape: 'square' | 'circle', r, color } | null (null = hidden).
+ * symbol(item, zoom) -> { shape: 'square' | 'circle' | 'diamond', r, color, style?: 'filled' | 'ring' | 'faded' } | null (null = hidden).
  */
 export function createPointLayer(L, items, symbol, options = {}) {
   const buckets = new Map(); // "row_col" (1°) -> [items]
@@ -223,6 +224,34 @@ export function createPointLayer(L, items, symbol, options = {}) {
           ctx.lineWidth = 0.8;
           ctx.strokeStyle = 'rgba(0, 0, 0, 0.45)';
           ctx.strokeRect(x - s.r - 1.4, y - s.r - 1.4, 2 * s.r + 2.8, 2 * s.r + 2.8);
+        } else if (s.shape === 'diamond') {
+          // GEM plants: filled = operating, ring = in development, faded = shelved/cancelled/retired.
+          const r = s.r * 1.25;
+          ctx.moveTo(x, y - r);
+          ctx.lineTo(x + r, y);
+          ctx.lineTo(x, y + r);
+          ctx.lineTo(x - r, y);
+          ctx.closePath();
+          ctx.globalAlpha = s.style === 'faded' ? 0.4 : 1;
+          ctx.fillStyle = s.style === 'ring' ? '#fff' : s.color;
+          ctx.fill();
+          if (s.style === 'ring') {
+            ctx.lineWidth = 2.2;
+            ctx.strokeStyle = s.color;
+            ctx.stroke();
+          }
+          ctx.lineWidth = 1;
+          ctx.strokeStyle = s.style === 'ring' ? 'rgba(0, 0, 0, 0.35)' : 'rgba(255, 255, 255, 0.95)';
+          if (s.style === 'ring') {
+            ctx.beginPath();
+            ctx.moveTo(x, y - r - 1.6);
+            ctx.lineTo(x + r + 1.6, y);
+            ctx.lineTo(x, y + r + 1.6);
+            ctx.lineTo(x - r - 1.6, y);
+            ctx.closePath();
+          }
+          ctx.stroke();
+          ctx.globalAlpha = 1;
         } else {
           ctx.arc(x, y, s.r, 0, 2 * Math.PI);
           ctx.fillStyle = s.color;
@@ -298,8 +327,51 @@ export function plantSymbol(hiddenSources) {
   };
 }
 
+/** GEM plant symbol: diamond in the technology colour, area ~ capacity, styled by status. */
+export function gemSymbol(hiddenTechs, hiddenStatuses) {
+  return (it, z) => {
+    const tech = it[2], status = it[3], mw = it[4];
+    if (hiddenTechs.has(tech) || hiddenStatuses.has(status)) return null;
+    const minMw = z <= 5 ? 100 : z <= 7 ? 10 : 0;
+    if (minMw && !(mw >= minMw)) return null;
+    return { shape: 'diamond', r: 3 + Math.min(10, Math.sqrt(mw || 0) / 2.2), color: GEM_TECHS[tech].color, style: GEM_STATUSES[status].style };
+  };
+}
+
+const mwText = (mw) => (mw ? `${mw.toLocaleString('en-US', { maximumFractionDigits: 1 })} MW` : 'capacity unknown');
+
+/** Details of a GEM plant (for the popup). */
+export function gemPlantHtml(it) {
+  const [, , tech, status, mw, name, country, start, exact, owner, url, units] = it;
+  const unitRows = units.length
+    ? `<details class="gem-units"><summary>${units.length} units / phases</summary><ul>${units
+        .map(([n, m, y]) => `<li>${esc(n || 'unnamed')} · ${m != null ? `${m} MW` : '–'}${y ? ` · ${y}` : ''}</li>`)
+        .join('')}</ul></details>`
+    : '';
+  return `<div class="gem-pop">
+    <div class="gem-title">${esc(name || 'Unnamed plant')}</div>
+    <div class="gem-sub"><span class="pp-dot" style="--c:${GEM_TECHS[tech].color}"></span>${GEM_TECHS[tech].label} · ${GEM_STATUSES[status].label}</div>
+    <dl>
+      <dt>Capacity</dt><dd><b>${mwText(mw)}</b></dd>
+      <dt>Country</dt><dd>${esc(country)}</dd>
+      ${start ? `<dt>Start year</dt><dd>${start}</dd>` : ''}
+      ${owner ? `<dt>Owner</dt><dd>${esc(owner)}</dd>` : ''}
+      <dt>Location</dt><dd>${exact ? 'exact' : 'approximate'}</dd>
+    </dl>
+    ${unitRows}
+    ${url ? `<a href="${esc(url)}" target="_blank" rel="noopener">GEM.Wiki page ↗</a>` : ''}
+    <div class="gem-src">Global Energy Monitor (CC BY 4.0)</div>
+  </div>`;
+}
+
 /** Hover text for a hit. */
 export function describeHit(kind, hit) {
+  if (kind === 'gem') {
+    const it = hit.item;
+    return `${GEM_TECHS[it[2]].label} · ${esc(it[5] || 'unnamed')} · <b>${mwText(it[4])}</b> · ${GEM_STATUSES[it[3]].label.toLowerCase()}${
+      it[8] ? '' : ' · approx. location'
+    } <span class="muted">(GEM, click for details)</span>`;
+  }
   if (kind === 'line') {
     const k = VOLTAGE_CLASSES[hit.cls >> 1];
     return `Power ${hit.cls & 1 ? 'cable' : 'line'} · <b>${k.label}</b> <span class="muted">(OpenStreetMap)</span>`;
@@ -316,8 +388,9 @@ export function describeHit(kind, hit) {
 // ------------------------------------------------------------ panel
 
 /**
- * Top-right panel. `avail` = { osm: index | null, gridfinder: index | null };
- * `state` = { lines, substations, plants, gridfinder, hidden: Set, hiddenSources: Set, open };
+ * Top-right panel. `avail` = { osm: index | null, gridfinder: index | null, gem: index | null };
+ * `state` = { lines, substations, plants, gridfinder, gem, hidden: Set, hiddenSources: Set,
+ *   hiddenGemTechs: Set, hiddenGemStatuses: Set, open };
  * onChange(state) is called after every change.
  */
 export function createPowerPanel(L, avail, state, onChange) {
@@ -328,6 +401,8 @@ export function createPowerPanel(L, avail, state, onChange) {
       const osm = avail.osm;
       const noOsm = osm ? '' : 'OpenStreetMap power data has not been built yet (npm run build-power)';
       const noGf = avail.gridfinder ? '' : 'gridfinder lines have not been built yet (npm run build-grid-lines)';
+      const gem = avail.gem;
+      const noGem = gem ? '' : 'GEM power plants have not been built yet (npm run build-gem-plants)';
       const sw = (key, label, reason, extra = '') => `<label class="switch-row"${reason ? ` title="${reason}"` : ''}>
           <input type="checkbox" role="switch" data-layer="${key}" ${state[key] && !reason ? 'checked' : ''} ${reason ? 'disabled' : ''}>
           <span class="switch" aria-hidden="true"></span><span>${label}${extra}</span></label>`;
@@ -356,6 +431,32 @@ export function createPowerPanel(L, avail, state, onChange) {
           </label>`
         )
         .join('');
+      const gemTechRows = gem
+        ? GEM_TECHS.map((t, i) => ({ t, i, info: gem.techs?.[i] ?? {} }))
+            .filter(({ info }) => info.plants > 0)
+            .map(
+              ({ t, i, info }) => `<label class="pp-row">
+            <input type="checkbox" data-gtech="${i}" ${state.hiddenGemTechs.has(i) ? '' : 'checked'}>
+            <span class="pp-diamond" style="--c:${t.color}"></span>
+            <span class="pp-name">${t.label}</span>
+            <span class="pp-meta">${fmtN(info.plants)} · ${fmtN(info.mw / 1000)} GW</span>
+          </label>`
+            )
+            .join('')
+        : '';
+      const gemStatusRows = gem
+        ? GEM_STATUSES.map((st, i) => ({ st, i, info: gem.statuses?.[i] ?? {} }))
+            .filter(({ info }) => info.plants > 0)
+            .map(
+              ({ st, i, info }) => `<label class="pp-row">
+            <input type="checkbox" data-gstat="${i}" ${state.hiddenGemStatuses.has(i) ? '' : 'checked'}>
+            <span class="pp-diamond ${st.style}" style="--c:#6f6d68"></span>
+            <span class="pp-name">${st.label}</span>
+            <span class="pp-meta">${fmtN(info.plants)} · ${fmtN(info.mw / 1000)} GW</span>
+          </label>`
+            )
+            .join('')
+        : '';
       el.innerHTML = `
         <button type="button" class="pp-head" aria-expanded="${state.open}">
           <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M9 1 3 9h4l-1 6 6-8H8z"/></svg>
@@ -374,6 +475,14 @@ export function createPowerPanel(L, avail, state, onChange) {
           ${sw('substations', '<span class="pp-square" style="--c:#55534e;display:inline-block;vertical-align:-1px;margin-right:5px"></span>Substations', noOsm, ' <span class="muted">OpenStreetMap</span>')}
           ${sw('plants', 'Power plants', noOsm, ' <span class="muted">OpenStreetMap</span>')}
           ${sources.length ? `<div class="pp-sub"><div class="pp-list">${sourceRows}</div><p class="pp-note">Circle area ~ capacity. Small plants appear as you zoom in.</p></div>` : ''}
+          ${sw('gem', 'Power plants', noGem, ' <span class="muted">Global Energy Monitor</span>')}
+          ${
+            gem
+              ? `<div class="pp-sub"><div class="pp-actions"><span>Technology</span></div><div class="pp-list">${gemTechRows}</div>
+                  <div class="pp-actions"><span>Status</span></div><div class="pp-list">${gemStatusRows}</div>
+                  <p class="pp-note">Diamond area ~ capacity (units at a site are merged). Filled: operating; outline: in development; faded: inactive. Click a plant for details.</p></div>`
+              : ''
+          }
           ${sw('gridfinder', 'Predicted MV grid', noGf, ' <span class="muted">gridfinder</span>')}
           ${avail.gridfinder ? '<p class="pp-note" style="margin:-4px 0 0 36px">Thin black lines: modelled from satellite night lights, not surveyed.</p>' : ''}
           ${osm?.failed?.length ? `<p class="pp-note warn">Missing countries (download failed): ${osm.failed.join(', ')}</p>` : ''}
@@ -382,7 +491,7 @@ export function createPowerPanel(L, avail, state, onChange) {
       L.DomEvent.disableScrollPropagation(el);
       const head = el.querySelector('.pp-head'), body = el.querySelector('.pp-body');
       const count = () => {
-        const n = ['lines', 'substations', 'plants', 'gridfinder'].filter((k) => state[k]).length;
+        const n = ['lines', 'substations', 'plants', 'gem', 'gridfinder'].filter((k) => state[k]).length;
         el.querySelector('.pp-count').textContent = n ? `${n} on` : '';
       };
       count();
@@ -397,8 +506,10 @@ export function createPowerPanel(L, avail, state, onChange) {
         if (t.dataset.layer) state[t.dataset.layer] = t.checked;
         else if (t.dataset.cls) t.checked ? state.hidden.delete(+t.dataset.cls) : state.hidden.add(+t.dataset.cls);
         else if (t.dataset.src) t.checked ? state.hiddenSources.delete(+t.dataset.src) : state.hiddenSources.add(+t.dataset.src);
+        else if (t.dataset.gtech) t.checked ? state.hiddenGemTechs.delete(+t.dataset.gtech) : state.hiddenGemTechs.add(+t.dataset.gtech);
+        else if (t.dataset.gstat) t.checked ? state.hiddenGemStatuses.delete(+t.dataset.gstat) : state.hiddenGemStatuses.add(+t.dataset.gstat);
         count();
-        onChange(state, t.dataset.layer ?? (t.dataset.cls ? 'classes' : 'sources'));
+        onChange(state, t.dataset.layer ?? (t.dataset.cls ? 'classes' : t.dataset.src ? 'sources' : 'gem-filter'));
       });
       el.querySelectorAll('[data-set]').forEach((btn) =>
         btn.addEventListener('click', () => {

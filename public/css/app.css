@@ -215,6 +215,20 @@ input[type="range"] { width: 100%; accent-color: var(--accent); margin: 2px 0; }
 .pp-line { height: var(--w); background: var(--c); border-radius: 2px; box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.6); }
 .pp-dot { width: 10px; height: 10px; border-radius: 50%; background: var(--c); justify-self: center; box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.8), 0 0 0 2px rgba(0, 0, 0, 0.15); }
 .pp-name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.pp-diamond { width: 9px; height: 9px; justify-self: center; background: var(--c); transform: rotate(45deg); box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.8); }
+.pp-diamond.ring { background: #fff; border: 2px solid var(--c); box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.25); width: 8px; height: 8px; }
+.pp-diamond.faded { opacity: 0.4; }
+.gem-popup .leaflet-popup-content { margin: 12px 14px; font-size: 12.5px; line-height: 1.45; }
+.gem-pop .gem-title { font-weight: 600; font-size: 14px; margin-bottom: 2px; }
+.gem-pop .gem-sub { display: flex; align-items: center; gap: 6px; color: var(--text-2); margin-bottom: 6px; }
+.gem-pop .gem-sub .pp-dot { width: 9px; height: 9px; flex: none; }
+.gem-pop dl { display: grid; grid-template-columns: auto 1fr; gap: 1px 10px; margin: 0 0 6px; }
+.gem-pop dt { color: var(--muted); }
+.gem-pop dd { margin: 0; }
+.gem-pop .gem-units { margin: 0 0 6px; }
+.gem-pop .gem-units ul { margin: 4px 0 0; padding-left: 16px; max-height: 140px; overflow-y: auto; }
+.gem-pop .gem-src { color: var(--muted); font-size: 11px; margin-top: 6px; }
+.gem-popup .leaflet-popup-content-wrapper, .gem-popup .leaflet-popup-tip { background: var(--surface); color: var(--text); }
 .pp-square { width: 9px; height: 9px; justify-self: center; background: #fff; border: 2px solid var(--c); border-radius: 1px; }
 .pp-meta { color: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .pp-note { margin: 2px 0 0; color: var(--muted); font-size: 11px; line-height: 1.35; }

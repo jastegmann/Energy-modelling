@@ -15,6 +15,7 @@
     "mock-pvgis": "node scripts/dev/mock-pvgis.mjs",
     "test": "node --disable-warning=ExperimentalWarning --test test/*.test.mjs",
     "build-power": "node --disable-warning=ExperimentalWarning scripts/build-power.mjs",
+    "build-gem-plants": "node scripts/build-gem-plants.mjs",
     "build-grid-lines": "node --disable-warning=ExperimentalWarning scripts/build-grid-lines.mjs",
     "build-screening": "node --disable-warning=ExperimentalWarning scripts/build-screening.mjs",
     "mock-screening": "node --disable-warning=ExperimentalWarning scripts/dev/mock-screening-sources.mjs"
@@ -25,6 +26,10 @@
   },
   "license": "MIT",
   "dependencies": {
+    "exceljs": "^4.4.0",
     "geotiff": "^3.0.5"
+  },
+  "overrides": {
+    "uuid": "^11.1.1"
   }
 }
