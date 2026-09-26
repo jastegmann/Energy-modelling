@@ -125,8 +125,10 @@ Notes:
   restarted, and other resolutions reuse them.
 - **gridfinder download:** the network is downloaded once from Zenodo. If that fails, download `grid.gpkg`
   from <https://zenodo.org/records/3628142> and pass `--gridfinder path/to/grid.gpkg`.
-- **Overpass limits:** Overpass is a shared public service. Large countries can take several minutes and
-  are retried automatically; use `--overpass <url>` for another instance.
+- **Overpass limits:** Overpass is a shared public service. Large countries can take several minutes. When
+  a server is busy (HTTP 429/504) the script retries and switches between public instances (overpass-api.de,
+  overpass.kumi.systems, overpass.private.coffee). Countries that still fail are reported at the end; the rest
+  are cached, so running the command again retries only those. `--overpass url1,url2` sets the instances.
 - **Limitations:**
   - gridfinder lines are *predicted*, not surveyed.
   - OpenStreetMap protected-area coverage varies by country.

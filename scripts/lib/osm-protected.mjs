@@ -6,9 +6,11 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 export const OVERPASS = 'https://overpass-api.de/api/interpreter';
+/** Public Overpass instances, tried in turn when one is busy. */
+export const OVERPASS_MIRRORS = [OVERPASS, 'https://overpass.kumi.systems/api/interpreter', 'https://overpass.private.coffee/api/interpreter'];
 
 export function protectedQuery(iso2) {
-  return `[out:json][timeout:900][maxsize:2000000000];
+  return `[out:json][timeout:300][maxsize:536870912];
 area["ISO3166-1"="${iso2}"]["admin_level"="2"]->.a;
 (
   way["boundary"="protected_area"](area.a);
@@ -79,31 +81,48 @@ export function overpassToAreas(json) {
   return areas;
 }
 
-/** Protected areas of a country, from the cache or from Overpass. */
-export async function protectedAreas(iso2, { cacheDir, endpoint = OVERPASS, log = console.log } = {}) {
+/**
+ * Protected areas of a country, from the cache or from Overpass. `endpoint` is
+ * one URL or a list; on a busy server or an error the next one is tried.
+ * Modest timeout/maxsize values get a slot sooner on busy public servers.
+ */
+export async function protectedAreas(iso2, { cacheDir, endpoint = OVERPASS_MIRRORS, log = console.log, attempts = 8 } = {}) {
   mkdirSync(cacheDir, { recursive: true });
   const file = join(cacheDir, `${iso2}.json`);
   if (existsSync(file)) return JSON.parse(readFileSync(file, 'utf8'));
-  for (let attempt = 0; ; attempt++) {
+  const endpoints = [endpoint].flat();
+  let lastError;
+  for (let attempt = 0; attempt < attempts; attempt++) {
+    const url = endpoints[attempt % endpoints.length];
+    const host = new URL(url).host;
+    // Move on to the next server quickly; back off once every server has been tried.
+    const last = attempt === attempts - 1;
+    const wait = last ? 0 : (attempt + 1) % endpoints.length ? 5 : Math.min(120, 30 * 2 ** Math.floor(attempt / endpoints.length));
+    const next = last ? 'giving up' : `next try in ${wait} s`;
     try {
-      const r = await fetch(endpoint, {
+      const r = await fetch(url, {
         method: 'POST',
         headers: { 'content-type': 'application/x-www-form-urlencoded', 'user-agent': 'solar-yield-map (screening layers)' },
         body: `data=${encodeURIComponent(protectedQuery(iso2))}`,
+        signal: AbortSignal.timeout(420000),
       });
-      if ((r.status === 429 || r.status >= 500) && attempt < 5) {
-        log(`  Overpass busy (HTTP ${r.status}) for ${iso2}, retrying in ${30 * (attempt + 1)} s`);
-        await new Promise((res) => setTimeout(res, 30000 * (attempt + 1)));
-        continue;
+      if (r.ok) {
+        const json = await r.json();
+        // Overpass reports a query timeout or memory limit as a remark with HTTP 200.
+        if (json.remark && /runtime error|timed out|out of memory/i.test(json.remark)) throw new Error(json.remark.slice(0, 200));
+        const areas = overpassToAreas(json);
+        writeFileSync(file, JSON.stringify(areas));
+        return areas;
       }
-      if (!r.ok) throw new Error(`Overpass HTTP ${r.status}: ${(await r.text()).slice(0, 200)}`);
-      const areas = overpassToAreas(await r.json());
-      writeFileSync(file, JSON.stringify(areas));
-      return areas;
+      lastError = new Error(`HTTP ${r.status}: ${(await r.text()).replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 160)}`);
+      if (!(r.status === 429 || r.status >= 500)) throw lastError;
+      log(`  Overpass ${host} busy (HTTP ${r.status}) for ${iso2}; ${next}`);
     } catch (e) {
-      if (attempt >= 5) throw e;
-      log(`  Overpass error for ${iso2} (${e.message}), retrying`);
-      await new Promise((res) => setTimeout(res, 30000 * (attempt + 1)));
+      if (e === lastError) throw e;
+      lastError = e;
+      log(`  Overpass ${host} error for ${iso2} (${e.message}); ${next}`);
     }
+    if (wait) await new Promise((res) => setTimeout(res, wait * 1000));
   }
+  throw lastError;
 }
