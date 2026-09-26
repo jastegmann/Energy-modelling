@@ -4,6 +4,8 @@
 //   - land cover           ESA WorldCover 2021 v200 (CC BY 4.0), read from its overviews (~150 m)
 //   - slope                Copernicus DEM GLO-90 (free licence), overview (~185 m)
 //   - distance to grid     gridfinder (Arderne et al. 2020, CC BY 4.0)
+//   - distance to OSM lines and substations of at least 33/66/132/220/330 kV
+//                          OpenStreetMap (ODbL) via the Overpass API
 // For every cell a joint histogram (protected × land cover × slope class) and the
 // distance to the nearest power line are stored next to the yield grid, in
 // public/data/grids/<res>/screening/. The page combines them with any filters.
@@ -24,7 +26,8 @@ import { pipeline } from 'node:stream/promises';
 import { ROOT, loadLandCells, selectCells, cellCenter, parseBbox } from './lib/grid.mjs';
 import { ISO2 } from './lib/regions.mjs';
 import { blockOf } from '../public/js/model/configs.js';
-import { LAND_COVER, SLOPE_LIMITS, NBINS, binIndex, encodeScreenBlock } from '../public/js/screening-layers.js';
+import { LAND_COVER, SLOPE_LIMITS, NBINS, binIndex, encodeScreenBlock, TX_KV } from '../public/js/screening-layers.js';
+import { powerDataFor } from './lib/osm-power.mjs';
 
 const { values: args } = parseArgs({
   options: {
@@ -40,6 +43,7 @@ const { values: args } = parseArgs({
     'dem-base': { type: 'string' },
     'skip-protected': { type: 'boolean', default: false },
     'skip-grid': { type: 'boolean', default: false },
+    'skip-osm-power': { type: 'boolean', default: false },
     'max-grid-km': { type: 'string', default: '1000' },
     cache: { type: 'string' },
     grids: { type: 'string' },
@@ -180,6 +184,29 @@ function rasterizeProtected(la, lo) {
   return out;
 }
 
+// ------------------------------------------------------------ OSM power (distance to transmission)
+// Lines and substations per voltage threshold; distances are computed per cell at output time.
+let txIndex = null;
+if (!args['skip-osm-power']) {
+  const isos = [...new Set([...countries].map((c) => ISO2[c]).filter(Boolean))].sort();
+  const endpoint = args.overpass ? args.overpass.split(',').map((u) => u.trim()).filter(Boolean) : osm.OVERPASS_MIRRORS;
+  const power = await powerDataFor(isos, { cacheDir: join(cacheDir, 'osm-power'), endpoint, log });
+  if (power.failed.length) {
+    log(
+      `\nOpenStreetMap power data could not be downloaded for ${power.failed.join(', ')} (Overpass busy). The other countries are cached;` +
+        ` run the same command again later to retry only these, or pass --skip-osm-power to build without distances to transmission.`
+    );
+    process.exit(1);
+  }
+  txIndex = TX_KV.map((kv) => {
+    const lines = new gpkg.SegmentIndex(0.25), subs = new gpkg.SegmentIndex(0.25);
+    for (const l of power.lines) if (l.v >= kv) lines.addLine(l.p);
+    for (const st of power.substations) if (st.v >= kv) subs.addSegment(st.lon, st.lat, st.lon, st.lat);
+    return { lines, subs };
+  });
+  log(`OSM power: ${power.lines.length} lines, ${power.substations.length} substations; ≥ ${TX_KV.join('/')} kV: ${txIndex.map((t) => `${t.lines.count}/${t.subs.count}`).join(', ')} segments/substations`);
+}
+
 // ------------------------------------------------------------ per-tile summaries
 const lcIndex = new Uint8Array(256).fill(255);
 LAND_COVER.forEach((c, i) => (lcIndex[c.code] = i));
@@ -314,6 +341,7 @@ for (const { res, land, cells } of targets) {
     const land8 = new Uint8Array(n);
     const hist8 = new Uint8Array(NBINS * n);
     const gridKm = new Float32Array(n).fill(NaN);
+    const tx = txIndex ? { lineKm: new Float32Array(TX_KV.length * n).fill(NaN), subKm: new Float32Array(TX_KV.length * n).fill(NaN) } : null;
     list.forEach((c, i) => {
       const { lat, lon } = cellCenter(c.idx, res, land.nx);
       acc.fill(0);
@@ -336,8 +364,14 @@ for (const { res, land, cells } of targets) {
       land8[i] = Math.round((255 * total) / pxPerCell);
       if (total > 0) for (let bin = 0; bin < NBINS; bin++) hist8[bin * n + i] = Math.round((255 * acc[bin]) / total);
       if (index) gridKm[i] = index.distanceKm(lat, lon, maxKm);
+      if (tx) {
+        txIndex.forEach((t, k) => {
+          tx.lineKm[k * n + i] = t.lines.count ? t.lines.distanceKm(lat, lon, maxKm) : Infinity;
+          tx.subKm[k * n + i] = t.subs.count ? t.subs.distanceKm(lat, lon, maxKm) : Infinity;
+        });
+      }
     });
-    const buf = encodeScreenBlock(Uint32Array.from(list, (c) => c.idx), gridKm, land8, hist8);
+    const buf = encodeScreenBlock(Uint32Array.from(list, (c) => c.idx), gridKm, land8, hist8, tx);
     writeFileSync(join(outDir, 'screening', `${bid}.bin.gz`), gzipSync(buf, { level: 9 }));
     written += n;
   }
@@ -356,12 +390,14 @@ for (const { res, land, cells } of targets) {
         landCover: LAND_COVER.map((c) => ({ code: c.code, name: c.name })),
         slopeLimits: SLOPE_LIMITS,
         gridDistance: !args['skip-grid'] || !!prev?.gridDistance,
+        transmissionDistance: txIndex ? TX_KV : prev?.transmissionDistance ?? null,
         protectedAreas: !args['skip-protected'] || !!prev?.protectedAreas,
         sources: {
           protectedAreas: 'OpenStreetMap contributors (ODbL), boundary=protected_area / national_park, leisure=nature_reserve',
           landCover: 'ESA WorldCover 10 m 2021 v200 (CC BY 4.0), © ESA WorldCover project / Copernicus Sentinel data',
           slope: 'Copernicus DEM GLO-90 (© DLR e.V. 2010-2014 and © Airbus Defence and Space GmbH 2014-2018, provided under COPERNICUS by the EU and ESA)',
           grid: 'gridfinder, Arderne et al. (2020), Predictive mapping of the global power system using open data, Scientific Data 7:19 (CC BY 4.0)',
+          transmission: 'OpenStreetMap contributors (ODbL), power=line/minor_line/cable and power=substation with a voltage tag',
         },
         blocks: allBlocks,
       },

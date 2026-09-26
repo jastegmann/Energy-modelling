@@ -8,6 +8,7 @@ import { niceTicks } from './colors.js';
 
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 const fmt = (v, d = 0) => (Number.isFinite(v) ? v.toLocaleString('en-US', { minimumFractionDigits: d, maximumFractionDigits: d }) : '–');
+const km = (v) => (Number.isFinite(v) ? `${fmt(v, 1)} km` : '> max.');
 const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
 const coord = (lat, lon) => `${Math.abs(lat).toFixed(3)}° ${lat >= 0 ? 'N' : 'S'}, ${Math.abs(lon).toFixed(3)}° ${lon >= 0 ? 'E' : 'W'}`;
 
@@ -192,6 +193,13 @@ export class LocationCard {
       <dt>Land cover</dt><dd>${lc || '–'}</dd>
       <dt>Slope</dt><dd>${info.slope.map((v, i) => `${info.slopeLabels[i]} ${fmt(v * 100)}%`).join(', ')}</dd>
       <dt>Power grid</dt><dd>${Number.isFinite(info.gridKm) ? `${fmt(info.gridKm, 1)} km to the nearest line (gridfinder)` : 'no line within range'}</dd>
+      <dt>Transmission</dt><dd>${
+        info.tx
+          ? `<table class="t tx-table"><thead><tr><th>Voltage</th><th>Line</th><th>Substation</th></tr></thead><tbody>${info.tx
+              .map((t) => `<tr><td>≥ ${t.kv} kV</td><td>${km(t.line)}</td><td>${km(t.sub)}</td></tr>`)
+              .join('')}</tbody></table><span class="muted">Distance from the cell centre, OpenStreetMap</span>`
+          : 'not in these screening layers (run npm run build-screening again)'
+      }</dd>
     </dl>`;
     this.body.querySelector('.loc-screen')?.remove();
     this.body.insertAdjacentHTML('beforeend', `<div class="loc-screen">${section(`Site screening (${info.res}° grid cell)`, html)}</div>`);

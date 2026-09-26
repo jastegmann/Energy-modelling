@@ -1,15 +1,20 @@
-// Compact tile format for power-line geometry (built by scripts/build-grid-lines.mjs,
-// drawn by grid-lines-layer.js).
+// Compact tile format for power-line geometry (built by scripts/lib/line-tiles.mjs
+// for build-grid-lines and build-power, drawn by power-layers.js).
 //
-// A tile file (gzip'd) is: uint32 magic "GLN1", then a varint stream:
-//   nLines, and per line: nPoints, then (x, y) as zigzag varint deltas in units
-//   of `quantum` degrees; the first point is relative to the tile's south-west
-//   corner (west, south), later points to the previous point.
+// A tile file (gzip'd) is: uint32 magic "GLN1" or "GLN2", then a varint stream:
+//   nLines, and per line: [class, for GLN2] nPoints, then (x, y) as zigzag varint
+//   deltas in units of `quantum` degrees; the first point is relative to the
+//   tile's south-west corner (west, south), later points to the previous point.
 
-export const LINES_MAGIC = 0x314e4c47; // "GLN1"
+export const LINES_MAGIC = 0x314e4c47; // "GLN1": no classes
+export const LINES_MAGIC_CLASSES = 0x324e4c47; // "GLN2": a class number per line
 
-/** Encode lines ([[lon, lat, lon, lat, ...], ...]) of one tile. */
+/**
+ * Encode lines ([[lon, lat, lon, lat, ...], ...]) of one tile. A line may carry
+ * a `cls` property (small integer, e.g. a voltage class), which is stored too.
+ */
 export function encodeLines(lines, west, south, quantum) {
+  const withClass = lines.some((l) => l.cls !== undefined);
   const out = [];
   const varint = (v) => {
     while (v > 0x7f) {
@@ -29,10 +34,14 @@ export function encodeLines(lines, west, south, quantum) {
       if (q.length && q[q.length - 2] === x && q[q.length - 1] === y) continue;
       q.push(x, y);
     }
-    if (q.length >= 4) kept.push(q);
+    if (q.length >= 4) {
+      q.cls = l.cls ?? 0;
+      kept.push(q);
+    }
   }
   varint(kept.length);
   for (const q of kept) {
+    if (withClass) varint(q.cls);
     varint(q.length / 2);
     let px = 0, py = 0;
     for (let i = 0; i < q.length; i += 2) {
@@ -43,15 +52,17 @@ export function encodeLines(lines, west, south, quantum) {
     }
   }
   const buf = new Uint8Array(4 + out.length);
-  new DataView(buf.buffer).setUint32(0, LINES_MAGIC, true);
+  new DataView(buf.buffer).setUint32(0, withClass ? LINES_MAGIC_CLASSES : LINES_MAGIC, true);
   buf.set(out, 4);
   return buf;
 }
 
-/** Decode a tile into an array of Float64Array [lon, lat, lon, lat, ...]. */
+/** Decode a tile into an array of Float64Array [lon, lat, lon, lat, ...], each with a `cls` property. */
 export function decodeLines(buf, west, south, quantum) {
   const b = buf instanceof Uint8Array ? buf : new Uint8Array(buf);
-  if (new DataView(b.buffer, b.byteOffset, b.byteLength).getUint32(0, true) !== LINES_MAGIC) throw new Error('Not a grid-lines tile');
+  const magic = new DataView(b.buffer, b.byteOffset, b.byteLength).getUint32(0, true);
+  if (magic !== LINES_MAGIC && magic !== LINES_MAGIC_CLASSES) throw new Error('Not a grid-lines tile');
+  const withClass = magic === LINES_MAGIC_CLASSES;
   let o = 4;
   const varint = () => {
     let v = 0, mul = 1, c;
@@ -69,6 +80,7 @@ export function decodeLines(buf, west, south, quantum) {
   const n = varint();
   const lines = new Array(n);
   for (let k = 0; k < n; k++) {
+    const cls = withClass ? varint() : 0;
     const m = varint();
     const pts = new Float64Array(2 * m);
     let x = 0, y = 0;
@@ -78,6 +90,7 @@ export function decodeLines(buf, west, south, quantum) {
       pts[2 * i] = west + x * quantum;
       pts[2 * i + 1] = south + y * quantum;
     }
+    pts.cls = cls;
     lines[k] = pts;
   }
   return lines;

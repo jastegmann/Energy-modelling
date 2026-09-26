@@ -5,7 +5,7 @@
 import { stagesFromFields } from './model/losses.js';
 import { FIXED_TILTS, configId } from './model/configs.js';
 import { unpackFields, GRID_ENCODING } from './grid-codec.js';
-import { decodeScreenBlock, alignScreen, evaluateFilters, protectedShare } from './screening-layers.js';
+import { decodeScreenBlock, alignScreen, evaluateFilters, protectedShare, txDistance } from './screening-layers.js';
 
 export async function loadBinary(url) {
   const r = await fetch(url);
@@ -309,7 +309,8 @@ export function pickValue(results, variable, i) {
 
 /**
  * Screening results of a block for the given filters (cached):
- * {suitable (0–1), pass (0/1), gridKm, protected} or null if no layers exist.
+ * {suitable (0–1), pass (0/1), gridKm, txKm (to the OSM line / substation chosen in
+ * the filters), protected, hasTx} or null if no layers exist.
  */
 export async function blockFilters(block, filters) {
   const sc = await block.screen();
@@ -317,7 +318,9 @@ export async function blockFilters(block, filters) {
   const key = JSON.stringify(filters);
   let r = block.filterCache.get(key);
   if (!r) {
-    r = { ...evaluateFilters(sc, filters), gridKm: sc.gridKm, protected: sc.protected, land: sc.land };
+    const txKm = new Float32Array(sc.n);
+    for (let i = 0; i < sc.n; i++) txKm[i] = txDistance(sc, filters.txTarget, filters.txKv, i);
+    r = { ...evaluateFilters(sc, filters), gridKm: sc.gridKm, txKm, hasTx: sc.hasTx, protected: sc.protected, land: sc.land };
     block.filterCache.set(key, r);
     if (block.filterCache.size > 4) block.filterCache.delete(block.filterCache.keys().next().value);
   }

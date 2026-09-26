@@ -58,6 +58,7 @@ export async function collectCells(datasets, scope, mount, params, filters, onPr
           suitableKm2: fr ? fr.suitable[i] * area : null,
           protected: fr ? 100 * fr.protected[i] : null,
           gridKm: fr ? fr.gridKm[i] : null,
+          txKm: fr?.hasTx ? fr.txKm[i] : null,
         });
       }
       onProgress?.(++n, ids.length);
@@ -112,7 +113,7 @@ export function toCsv(result, countries, mount, params) {
     `# Mounting: ${mountLabel(mount)}; grid ${ds.res} deg; source: ${ds.manifest.source}`,
     `# Parameters: ${Object.entries(params).map(([k, v]) => `${k}=${v}`).join('; ')}`,
     `# Filters: ${result.screened ? JSON.stringify(result.filters ?? {}) : 'not applied (no screening layers for this grid)'}`,
-    'rank,lat,lon,country,specific_yield_kWh_per_kWp,performance_ratio_pct,globinc_kWh_per_m2,ghi_kWh_per_m2,optimal_tilt_deg,elevation_m,cell_area_km2,suitable_land_pct,suitable_land_km2,protected_pct,grid_distance_km',
+    `rank,lat,lon,country,specific_yield_kWh_per_kWp,performance_ratio_pct,globinc_kWh_per_m2,ghi_kWh_per_m2,optimal_tilt_deg,elevation_m,cell_area_km2,suitable_land_pct,suitable_land_km2,protected_pct,grid_distance_km,${txColumn(result.filters)}`,
   ];
   const q = (s) => (/[",]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s);
   rows.forEach((r, i) => {
@@ -122,11 +123,15 @@ export function toCsv(result, countries, mount, params) {
         r.tilt != null ? r.tilt.toFixed(1) : '', r.elevation, r.area.toFixed(1),
         r.suitable != null ? r.suitable.toFixed(1) : '', r.suitableKm2 != null ? r.suitableKm2.toFixed(2) : '',
         r.protected != null ? r.protected.toFixed(1) : '', Number.isFinite(r.gridKm) ? r.gridKm.toFixed(1) : '',
+        Number.isFinite(r.txKm) ? r.txKm.toFixed(1) : '',
       ].join(',')
     );
   });
   return lines.join('\n');
 }
+
+/** CSV column name of the distance-to-transmission value (depends on the filter's line/substation and voltage). */
+const txColumn = (f) => `${f?.txTarget === 'sub' ? 'substation' : 'line'}_${f?.txKv ?? 132}kV_distance_km`;
 
 export function download(name, text) {
   const url = URL.createObjectURL(new Blob([text], { type: 'text/csv;charset=utf-8' }));

@@ -3,7 +3,7 @@
 // development (they are not real data):
 //   GET  /worldcover/ESA_WorldCover_10m_2021_v200_<tile>_Map.tif   (3° GeoTIFF tiles)
 //   GET  /dem/<name>/<name>.tif                                     (1° GeoTIFF tiles)
-//   POST /overpass                                                  (protected-area circles)
+//   POST /overpass                                                  (protected-area circles, or power infrastructure)
 // and makeGridGpkg() writes a GeoPackage with a regular "power line" lattice.
 //
 //   node scripts/dev/mock-screening-sources.mjs [--port 8092]
@@ -83,6 +83,28 @@ export function mockOverpass() {
   return { elements };
 }
 
+/**
+ * Power infrastructure as an Overpass response: 400/220 kV lines along every 4th
+ * meridian (even ones), 132 kV lines along every 3rd parallel, unmarked minor lines
+ * along odd meridians (+0.5°), a submarine cable, 132 kV substations where 132 kV
+ * lines cross 400 kV ones, and 50 MW solar plants.
+ */
+export function mockPowerOverpass() {
+  const elements = [];
+  let id = 1;
+  const way = (power, voltage, pts) =>
+    elements.push({ type: 'way', id: id++, tags: { power, ...(voltage ? { voltage } : {}) }, geometry: pts.map(([lon, lat]) => ({ lat, lon })) });
+  for (let lon = -16; lon <= 52; lon += 4) way('line', '400000;220000', [[lon, -36], [lon, -12], [lon, 12], [lon, 36]]);
+  for (let lat = -36; lat <= 36; lat += 3) way('line', '132000', [[-18, lat], [0, lat], [18, lat], [54, lat]]);
+  for (let lon = -15.5; lon <= 52; lon += 4) way('minor_line', null, [[lon, -30], [lon, 30]]);
+  way('cable', '33000', [[40, -10.5], [42, -10.5]]);
+  for (let lon = -16; lon <= 52; lon += 4) {
+    for (let lat = -36; lat <= 36; lat += 3) elements.push({ type: 'node', id: id++, lat, lon, tags: { power: 'substation', voltage: '132000', name: `Sub ${lat}/${lon}` } });
+  }
+  for (let lon = -15; lon <= 52; lon += 8) elements.push({ type: 'way', id: id++, center: { lat: 1.5, lon }, tags: { power: 'plant', 'plant:source': 'solar', 'plant:output:electricity': '50 MW', name: `Solar ${lon}` } });
+  return { elements };
+}
+
 /** GeoPackage with power lines every 1.5° of latitude and 2° of longitude. */
 export function makeGridGpkg(path, { west, south, east, north }) {
   rmSync(path, { force: true });
@@ -117,8 +139,10 @@ export function createMockScreeningSources() {
     try {
       const url = new URL(req.url, 'http://x');
       if (url.pathname === '/overpass') {
+        let body = '';
+        for await (const chunk of req) body += chunk;
         res.writeHead(200, { 'content-type': 'application/json' });
-        return res.end(JSON.stringify(mockOverpass()));
+        return res.end(JSON.stringify(decodeURIComponent(body).includes('"power"') ? mockPowerOverpass() : mockOverpass()));
       }
       let buf = cache.get(url.pathname);
       if (!buf) {

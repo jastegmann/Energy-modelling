@@ -15,8 +15,9 @@ import { assembleRings, overpassToAreas } from '../scripts/lib/osm-protected.mjs
 import { readLines, SegmentIndex } from '../scripts/lib/gpkg-lines.mjs';
 import { createMockScreeningSources, makeGridGpkg, mockOverpass, mockLandCover } from '../scripts/dev/mock-screening-sources.mjs';
 import {
-  NBINS, LAND_COVER, DEFAULT_FILTERS, binIndex, encodeScreenBlock, decodeScreenBlock, alignScreen, evaluateFilters, protectedShare,
+  NBINS, LAND_COVER, DEFAULT_FILTERS, binIndex, encodeScreenBlock, decodeScreenBlock, alignScreen, evaluateFilters, protectedShare, txDistance, TX_KV,
 } from '../public/js/screening-layers.js';
+import { parseVoltage, voltageClass, parseCapacityMW, plantSource, VOLTAGE_CLASSES, PLANT_SOURCES } from '../public/js/power.js';
 
 const ROOT = fileURLToPath(new URL('..', import.meta.url));
 const tmp = mkdtempSync(join(tmpdir(), 'solar-screen-test-'));
@@ -136,8 +137,20 @@ test('build-screening writes layers that reflect the sources', async () => {
   // Grid lines at 0° N and 36° E.
   assert.ok(Math.abs(sc.gridKm[at(0.55, 36.85)] - 0.55 * 110.57) < 1.5);
   assert.ok(sc.land.every((v) => v === 255));
+  // Distances to OSM transmission (mock: 132 kV along every 3rd parallel, 400/220 kV along every 4th meridian).
+  assert.ok(sc.hasTx);
+  const i = at(0.55, 36.85);
+  const dLat = 0.55 * 110.57, dLon = 0.85 * 111.32 * Math.cos((0.55 * Math.PI) / 180);
+  assert.ok(Math.abs(txDistance(sc, 'line', 132, i) - dLat) < 1.5, `${txDistance(sc, 'line', 132, i)}`);
+  assert.ok(Math.abs(txDistance(sc, 'line', 220, i) - dLon) < 1.5, `${txDistance(sc, 'line', 220, i)}`);
+  assert.ok(Math.abs(txDistance(sc, 'sub', 132, i) - Math.hypot(dLat, dLon)) < 1.5);
+  assert.ok(Number.isNaN(txDistance(sc, 'line', 330, i)) || txDistance(sc, 'line', 330, i) > 90); // 400 kV lines count as >= 330 kV
+  const f = { ...DEFAULT_FILTERS, minSuitable: 0, excludeProtected: false, landCover: LAND_COVER.map(() => true), maxSlope: 0 };
+  assert.equal(evaluateFilters(sc, { ...f, txTarget: 'line', txKv: 132, txMaxKm: 50 }).pass[i], 0);
+  assert.equal(evaluateFilters(sc, { ...f, txTarget: 'line', txKv: 132, txMaxKm: 100 }).pass[i], 1);
   const meta = JSON.parse(readFileSync(join(grids, '0.1', 'screening.json'), 'utf8'));
   assert.deepEqual(meta.blocks, [files[0].replace('.bin.gz', '')]);
+  assert.deepEqual(meta.transmissionDistance, TX_KV);
 });
 
 test('power-line tiles: codec, clipping and build-grid-lines', async () => {
@@ -176,4 +189,67 @@ test('power-line tiles: codec, clipping and build-grid-lines', async () => {
   assert.ok(vert && Math.min(vert[1], vert[3]) === 0 && Math.max(vert[1], vert[3]) === 1);
   // Nothing outside the requested box.
   assert.ok(lv.tiles.every((id) => { const [a, b] = id.split('_').map(Number); return a >= -2 && a < 2 && b >= 33 && b < 37; }));
+});
+
+test('OSM power tags: voltage, class, capacity, source', () => {
+  assert.equal(parseVoltage('400000;132000'), 400);
+  assert.equal(parseVoltage('132 kV'), 132);
+  assert.equal(parseVoltage('33'), 33); // kV typed without unit
+  assert.equal(parseVoltage('6600'), 6.6);
+  assert.equal(parseVoltage('medium'), 0);
+  const id = (kv, kind) => VOLTAGE_CLASSES[voltageClass(kv, kind)].id;
+  assert.equal(id(400), 'kv400');
+  assert.equal(id(132), 'kv132');
+  assert.equal(id(88), 'kv88');
+  assert.equal(id(11), 'kv11');
+  assert.equal(id(0.4), 'lv');
+  assert.equal(id(0, 'line'), 'unk');
+  assert.equal(id(0, 'minor_line'), 'unkminor');
+  assert.equal(parseCapacityMW('1.2 GW'), 1200);
+  assert.equal(parseCapacityMW('500 kW'), 0.5);
+  assert.equal(parseCapacityMW('75'), 75);
+  assert.equal(parseCapacityMW('yes'), 0);
+  assert.equal(PLANT_SOURCES[plantSource('solar')].id, 'solar');
+  assert.equal(PLANT_SOURCES[plantSource('diesel')].id, 'oil');
+  assert.equal(PLANT_SOURCES[plantSource('unicorn')].id, 'other');
+});
+
+test('build-power writes classed line tiles, substations and plants', async () => {
+  const { decodeLines } = await import('../public/js/grid-lines-codec.js');
+  const out = join(tmp, 'osm-power');
+  const r = await new Promise((resolve) => {
+    const p = spawn(
+      'node',
+      ['--disable-warning=ExperimentalWarning', 'scripts/build-power.mjs', '--countries', 'Kenya', '--overpass', `${base}/overpass`, '--cache', join(tmp, 'pcache'), '--out', out],
+      { cwd: ROOT }
+    );
+    let o = '';
+    p.stdout.on('data', (d) => (o += d));
+    p.stderr.on('data', (d) => (o += d));
+    p.on('close', (status) => resolve({ status, o }));
+  });
+  assert.equal(r.status, 0, r.o);
+  const index = JSON.parse(readFileSync(join(out, 'index.json'), 'utf8'));
+  const cls = (k) => VOLTAGE_CLASSES.findIndex((c) => c.id === k);
+  assert.ok(index.classes[cls('kv400')].km > 1000 && index.classes[cls('kv132')].km > 1000 && index.classes[cls('unkminor')].km > 1000);
+  assert.ok(index.classes[cls('kv132')].substations > 100);
+  assert.equal(index.sources[0].id, 'solar');
+  assert.ok(index.sources[0].plants > 0);
+  // Zoomed out (level 0) only >= 60 kV; full detail keeps the minor lines and the cable.
+  const [l0, , l2] = index.lines.levels;
+  const classesIn = (lv) => {
+    const found = new Set();
+    for (const id of lv.tiles) {
+      const [a, b] = id.split('_').map(Number);
+      for (const l of decodeLines(gunzipSync(readFileSync(join(out, lv.path, `${id}.bin.gz`))), b * lv.tileDeg, a * lv.tileDeg, lv.quantum)) found.add(l.cls);
+    }
+    return found;
+  };
+  const c0 = classesIn(l0), c2 = classesIn(l2);
+  assert.ok(c0.has(cls('kv400') * 2) && c0.has(cls('kv132') * 2) && !c0.has(cls('unkminor') * 2));
+  assert.ok(c2.has(cls('unkminor') * 2) && c2.has(cls('kv33') * 2 + 1)); // cable flag
+  const subs = JSON.parse(gunzipSync(readFileSync(join(out, 'substations.json.gz'))));
+  const plants = JSON.parse(gunzipSync(readFileSync(join(out, 'plants.json.gz'))));
+  assert.ok(subs.length > 100 && subs[0][3] === 132 && subs[0][2] === cls('kv132'));
+  assert.ok(plants.length > 0 && plants[0][2] === 0 && plants[0][3] === 50);
 });
