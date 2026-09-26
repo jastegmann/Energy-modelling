@@ -16,7 +16,7 @@ import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { PVGIS_BASE, tmyUrl, parsePvgisTmy, pvgisErrorMessage, isSeaError } from '../public/js/pvgis.js';
 import { writeTmyFile } from './lib/tmy-store.mjs';
-import { ROOT, loadLandCells, selectCells, landSamples, cachePath, parseBbox } from './lib/grid.mjs';
+import { ROOT, loadLandCells, selectCells, landSamples, cachePath, cachedCells, parseBbox } from './lib/grid.mjs';
 
 const { values: args } = parseArgs({
   options: {
@@ -38,6 +38,7 @@ const { values: args } = parseArgs({
 });
 
 const res = Number(args.res);
+console.log(`Loading the ${res}° land mask and scanning the TMY cache…`);
 const land = loadLandCells(res);
 const bbox = parseBbox(args.bbox);
 const cacheDir = args.cache ?? join(ROOT, 'cache', 'tmy', String(res));
@@ -48,7 +49,8 @@ const official = args.base.replace(/\/$/, '') === PVGIS_BASE;
 
 let todo = selectCells(land, { bbox, region: args.region, countries: args.countries });
 const inArea = todo.length;
-todo = todo.filter((c) => !existsSync(cachePath(cacheDir, c.idx, land.nx)));
+const inCache = cachedCells(cacheDir);
+todo = todo.filter((c) => !inCache.has(c.idx));
 const cached = inArea - todo.length;
 if (!args['retry-failed']) todo = todo.filter((c) => !failed[c.idx]);
 if (args.limit) todo = todo.slice(0, Number(args.limit));

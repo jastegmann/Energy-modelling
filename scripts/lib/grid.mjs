@@ -1,7 +1,7 @@
 // Helpers for the regular lat/lon grid used by the land mask, the fetch and
 // the build scripts.
 
-import { readFileSync, existsSync } from 'node:fs';
+import { readFileSync, existsSync, readdirSync } from 'node:fs';
 import { gunzipSync } from 'node:zlib';
 import { fileURLToPath } from 'node:url';
 import { join } from 'node:path';
@@ -70,6 +70,23 @@ export function landSamples(cell, res, nx, S) {
     }
   }
   return pts.sort((p, q) => p.d - q.d);
+}
+
+/**
+ * Indices of all cells with a cached TMY file. Lists each row directory once,
+ * which is far faster than checking every cell's file on slow (e.g. Windows
+ * or cloud-synced) file systems.
+ */
+export function cachedCells(cacheDir) {
+  const found = new Set();
+  if (!existsSync(cacheDir)) return found;
+  for (const row of readdirSync(cacheDir, { withFileTypes: true })) {
+    if (!row.isDirectory()) continue;
+    for (const f of readdirSync(join(cacheDir, row.name))) {
+      if (f.endsWith('.tmy.gz')) found.add(Number(f.slice(0, -7)));
+    }
+  }
+  return found;
 }
 
 export function cachePath(cacheDir, idx, nx) {
