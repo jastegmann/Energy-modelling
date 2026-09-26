@@ -26,7 +26,7 @@ import { gzipSync } from 'node:zlib';
 import { gridConfigs, blockDegrees, blockOf, CONFIG_FIELDS, STATIC_FIELDS } from '../public/js/model/configs.js';
 import { REF_ALBEDO, REF_B0 } from '../public/js/model/losses.js';
 import { packFields, GRID_ENCODING } from '../public/js/grid-codec.js';
-import { ROOT, loadLandCells, selectCells, landSamples, cachePath, parseBbox } from './lib/grid.mjs';
+import { ROOT, loadLandCells, selectCells, landSamples, cachePath, cachedCells, parseBbox } from './lib/grid.mjs';
 
 /** Bump when the model changes, so that cached blocks are recomputed. */
 const MODEL_VERSION = 1;
@@ -50,6 +50,7 @@ const { values: args } = parseArgs({
 });
 
 const res = Number(args.res);
+console.log(`Loading the ${res}° land mask and scanning the TMY cache…`);
 const land = loadLandCells(res);
 const cacheDir = args.cache ?? join(ROOT, 'cache', 'tmy', String(res));
 const gridsDir = join(ROOT, 'public', 'data', 'grids');
@@ -79,12 +80,13 @@ const filtered = args.bbox || args.region || args.countries;
 const wantedBlocks = filtered
   ? new Set(selectCells(land, { bbox: parseBbox(args.bbox), region: args.region, countries: args.countries }).map((c) => blockOf(c.idx, res)))
   : null;
+const cached = args.synthetic ? null : cachedCells(cacheDir);
 const blocks = new Map();
 for (const c of land.cells) {
   const id = blockOf(c.idx, res);
   if (wantedBlocks && !wantedBlocks.has(id)) continue;
   const info = cellInfo(c);
-  if (!info.synthetic && !existsSync(info.path)) continue;
+  if (!info.synthetic && !cached.has(c.idx)) continue;
   if (!blocks.has(id)) blocks.set(id, []);
   blocks.get(id).push(info);
 }
