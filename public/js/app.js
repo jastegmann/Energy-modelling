@@ -7,8 +7,9 @@ import { LAND_COVER, SLOPE_LIMITS, NBINS, DEFAULT_FILTERS, cellAreaKm2, txDistan
 import { createHeatLayer, HIDDEN } from './heat-layer.js';
 import {
   loadOverlayIndex, loadJsonGz, createLineLayer, createPointLayer, createPowerPanel,
-  osmLineStyle, gridfinderStyle, substationSymbol, plantSymbol, describeHit,
+  osmLineStyle, gridfinderStyle, substationSymbol, plantSymbol, gemSymbol, gemPlantHtml, describeHit,
 } from './power-layers.js';
+import { GEM_STATUSES } from './gem-plants.js';
 import { TX_KV } from './power.js';
 import { VARIABLES, buildLut, cssGradient, niceTicks, autoRange } from './colors.js';
 import { LocationCard, mountLabel } from './location.js';
@@ -27,10 +28,17 @@ const DEFAULT_STATE = {
   scaleMode: 'fixed',
   opacity: 0.75,
   smooth: false,
-  power: { lines: false, substations: false, plants: false, gridfinder: false, hidden: new Set(), hiddenSources: new Set(), open: false },
+  power: {
+    lines: false, substations: false, plants: false, gridfinder: false, gem: false,
+    hidden: new Set(), hiddenSources: new Set(), hiddenGemTechs: new Set(), hiddenGemStatuses: new Set(), open: false,
+  },
   filters: { ...DEFAULT_FILTERS, landCover: [...DEFAULT_FILTERS.landCover] },
 };
 const SCREEN_VARIABLES = new Set(['suitable', 'grid', 'tx']);
+/** Map overlays, in the order of the `pw` URL flags. */
+const POWER_LAYERS = ['lines', 'substations', 'plants', 'gridfinder', 'gem'];
+/** GEM statuses hidden by default (shelved, mothballed, cancelled, retired). */
+const GEM_HIDDEN_DEFAULT = new Set(GEM_STATUSES.flatMap((st, i) => (st.on ? [] : [i])));
 const state = structuredClone(DEFAULT_STATE);
 state.params = { ...DEFAULT_PARAMS };
 
@@ -56,11 +64,13 @@ function writeHash() {
   );
   if (state.scaleMode !== 'fixed') q.set('scale', state.scaleMode);
   const P = state.power;
-  const pw = ['lines', 'substations', 'plants', 'gridfinder'].map((k) => (P[k] ? 1 : 0)).join('');
-  if (pw !== '0000') q.set('pw', pw);
+  const pw = POWER_LAYERS.map((k) => (P[k] ? 1 : 0)).join('');
+  if (/1/.test(pw)) q.set('pw', pw);
   const bits = (set) => [...set].reduce((m, i) => m + 2 ** i, 0).toString(16);
   if (P.hidden.size) q.set('pwh', bits(P.hidden));
   if (P.hiddenSources.size) q.set('pws', bits(P.hiddenSources));
+  if (P.hiddenGemTechs.size) q.set('pgt', bits(P.hiddenGemTechs));
+  if (bits(P.hiddenGemStatuses) !== bits(GEM_HIDDEN_DEFAULT)) q.set('pgs', bits(P.hiddenGemStatuses));
   const changed = Object.keys(DEFAULT_PARAMS).filter((k) => state.params[k] !== DEFAULT_PARAMS[k]);
   if (changed.length) q.set('p', changed.map((k) => `${k}:${state.params[k]}`).join(','));
   if (map) {
@@ -95,11 +105,13 @@ function readHash() {
   if (VARIABLES[q.get('v')]) state.variable = q.get('v');
   if (q.get('scale') === 'auto') state.scaleMode = 'auto';
   const pw = q.get('pw') ?? '';
-  ['lines', 'substations', 'plants', 'gridfinder'].forEach((k, i) => (state.power[k] = pw[i] === '1'));
+  POWER_LAYERS.forEach((k, i) => (state.power[k] = pw[i] === '1'));
   if (q.get('grid') === '1') state.power.gridfinder = true; // older links
   const unbits = (h) => new Set([...parseInt(h || '0', 16).toString(2)].reverse().flatMap((b, i) => (b === '1' ? [i] : [])));
   state.power.hidden = unbits(q.get('pwh'));
   state.power.hiddenSources = unbits(q.get('pws'));
+  state.power.hiddenGemTechs = unbits(q.get('pgt'));
+  state.power.hiddenGemStatuses = q.has('pgs') ? unbits(q.get('pgs')) : new Set(GEM_HIDDEN_DEFAULT);
   const flt = (q.get('flt') ?? '').split('.');
   if ((flt.length === 6 || flt.length === 9) && flt[1].length === LAND_COVER.length) {
     state.filters = {
@@ -294,8 +306,8 @@ for (const [name, z] of [['power-lines', 380], ['power-points', 390]]) {
   map.getPane(name).style.zIndex = z;
   map.getPane(name).style.pointerEvents = 'none';
 }
-const OSM_POWER = 'data/osm-power/', GRIDFINDER = 'data/gridlines/';
-const power = { osm: null, gf: null, layers: {}, attributions: new Set() };
+const OSM_POWER = 'data/osm-power/', GRIDFINDER = 'data/gridlines/', GEM_PLANTS = 'data/gem-plants/';
+const power = { osm: null, gf: null, gem: null, layers: {}, attributions: new Set() };
 function setAttribution(text, on) {
   if (!text || on === power.attributions.has(text)) return;
   if (on) (map.attributionControl.addAttribution(text), power.attributions.add(text));
@@ -305,12 +317,18 @@ async function applyPower(what) {
   const P = state.power;
   if (what === 'classes') for (const k of ['lines', 'substations']) power.layers[k]?.redraw();
   if (what === 'sources') power.layers.plants?.redraw();
-  for (const kind of ['gridfinder', 'lines', 'substations', 'plants']) {
-    const on = P[kind] && !!(kind === 'gridfinder' ? power.gf : power.osm);
+  if (what === 'gem-filter') power.layers.gem?.redraw();
+  for (const kind of ['gridfinder', 'lines', 'substations', 'plants', 'gem']) {
+    const on = P[kind] && !!(kind === 'gridfinder' ? power.gf : kind === 'gem' ? power.gem : power.osm);
     if (on && !power.layers[kind]) {
-      // Substations and plants are loaded the first time they are switched on.
-      const items = await loadJsonGz(`${OSM_POWER}${power.osm[kind].path}`).catch(() => []);
-      power.layers[kind] ??= createPointLayer(L, items, kind === 'substations' ? substationSymbol(P.hidden) : plantSymbol(P.hiddenSources), { pane: 'power-points' });
+      // Point layers are loaded the first time they are switched on.
+      if (kind === 'gem') {
+        const items = await loadJsonGz(`${GEM_PLANTS}${power.gem.plants.path}`).catch(() => []);
+        power.layers.gem ??= createPointLayer(L, items, gemSymbol(P.hiddenGemTechs, P.hiddenGemStatuses), { pane: 'power-points', zIndex: 2 });
+      } else {
+        const items = await loadJsonGz(`${OSM_POWER}${power.osm[kind].path}`).catch(() => []);
+        power.layers[kind] ??= createPointLayer(L, items, kind === 'substations' ? substationSymbol(P.hidden) : plantSymbol(P.hiddenSources), { pane: 'power-points' });
+      }
     }
     const layer = power.layers[kind];
     if (!layer) continue;
@@ -320,13 +338,15 @@ async function applyPower(what) {
   }
   setAttribution(power.osm?.attribution, !!power.osm && (P.lines || P.substations || P.plants));
   setAttribution(power.gf?.attribution, !!power.gf && P.gridfinder);
+  setAttribution(power.gem?.attribution, !!power.gem && P.gem);
 }
-Promise.all([loadOverlayIndex(OSM_POWER), loadOverlayIndex(GRIDFINDER)]).then(([osm, gf]) => {
+Promise.all([loadOverlayIndex(OSM_POWER), loadOverlayIndex(GRIDFINDER), loadOverlayIndex(GEM_PLANTS)]).then(([osm, gf, gem]) => {
   power.osm = osm?.version === 1 ? osm : null;
   power.gf = gf?.version === 1 ? gf : null;
+  power.gem = gem?.version === 1 ? gem : null;
   if (power.gf) power.layers.gridfinder = createLineLayer(L, GRIDFINDER, gf.levels, gridfinderStyle, { pane: 'power-lines', zIndex: 1 });
   if (power.osm) power.layers.lines = createLineLayer(L, OSM_POWER, power.osm.lines.levels, osmLineStyle(state.power.hidden), { pane: 'power-lines', zIndex: 2 });
-  createPowerPanel(L, { osm: power.osm, gridfinder: power.gf }, state.power, (_, what) => {
+  createPowerPanel(L, { osm: power.osm, gridfinder: power.gf, gem: power.gem }, state.power, (_, what) => {
     if (what !== 'open') applyPower(what);
     writeHash();
   }).addTo(map);
@@ -337,7 +357,7 @@ Promise.all([loadOverlayIndex(OSM_POWER), loadOverlayIndex(GRIDFINDER)]).then(([
 function powerHover(lat, lon) {
   const z = map.getZoom();
   const on = (k) => power.layers[k] && map.hasLayer(power.layers[k]);
-  for (const [k, kind] of [['plants', 'plant'], ['substations', 'substation']]) {
+  for (const [k, kind] of [['gem', 'gem'], ['plants', 'plant'], ['substations', 'substation']]) {
     const h = on(k) && power.layers[k].hit(lat, lon, z, 3);
     if (h) return describeHit(kind, h);
   }
@@ -558,7 +578,17 @@ function openPoint(lat, lon) {
   card.open(lat, lon);
   writeHash();
 }
-map.on('click', (e) => openPoint(e.latlng.lat, e.latlng.lng));
+map.on('click', (e) => {
+  // A click on a GEM power plant shows its details instead of analysing the location.
+  const gem = power.layers.gem;
+  const lon = ((((e.latlng.lng + 180) % 360) + 360) % 360) - 180;
+  const hit = gem && map.hasLayer(gem) && gem.hit(e.latlng.lat, lon, map.getZoom(), 3);
+  if (hit) {
+    L.popup({ maxWidth: 320, className: 'gem-popup' }).setLatLng([hit.item[1], hit.item[0]]).setContent(gemPlantHtml(hit.item)).openOn(map);
+    return;
+  }
+  openPoint(e.latlng.lat, e.latlng.lng);
+});
 
 // ---------------------------------------------------------------- screening
 let countries = new Map();

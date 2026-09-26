@@ -147,6 +147,7 @@ The **Power infrastructure** panel in the top-right corner of the map switches t
 | Power lines, coloured by voltage level (765 kV … < 5 kV, unknown); cables dashed | OpenStreetMap `power=line / minor_line / cable` | `npm run build-power -- --region africa` |
 | Substations (white squares, border in the voltage colour) | OpenStreetMap `power=substation` | same |
 | Power plants (circles by energy source, area ~ capacity) | OpenStreetMap `power=plant` | same |
+| Power plants (diamonds by technology, area ~ capacity; filled = operating, outline = in development, faded = inactive) | Global Energy Monitor trackers (Excel) | `npm run build-gem-plants` |
 | Predicted medium-voltage grid (thin black lines) | gridfinder `grid.gpkg` | `npm run build-grid-lines -- --region africa` |
 
 - **Voltage levels:** each level has a tick box in the panel, which also filters substations. The panel
@@ -163,6 +164,20 @@ The **Power infrastructure** panel in the top-right corner of the map switches t
   writes `public/data/gridlines/`, simplified to ~1 km when zoomed out, ~100 m at zoom 7–9 and at full
   detail from zoom 10.
 - **Missing files:** a switch whose files have not been built is greyed out.
+
+**Global Energy Monitor power plants.** Put the GEM tracker Excel files (e.g. the Global Integrated Power
+Tracker) in `cache/screening/Powerplants/` and run `npm run build-gem-plants`. You can also pass
+`--file <path>` (repeatable) and `--region all|Africa|...` (default Africa).
+- **Reading the files:** the data sheet and its columns are found by their headers. Units in several files are
+  counted once, by GEM unit/phase ID. Units at the same site are merged into one plant per technology and status.
+- **Technologies:** 10 (solar PV, CSP, wind, hydropower, coal, gas, oil/diesel, nuclear, bioenergy,
+  geothermal). GEM's oil/gas type is split by its first-listed fuel.
+- **Statuses:** operating, construction, pre-construction and announced are shown by default. Shelved,
+  mothballed, cancelled and retired can be ticked on in the panel.
+- **Map:** hovering over a plant shows its name, capacity and status. Clicking one opens its details:
+  owner, start year, units, location accuracy and a GEM.Wiki link.
+- **Licence:** the data is CC BY 4.0 ("Global Energy Monitor, Global Integrated Power Tracker"). The map
+  credits it while the layer is on.
 
 **Distance to transmission (screening).** `build-screening` also computes, for every cell, the distance to the
 nearest OpenStreetMap line and substation of at least 33, 66, 132, 220 and 330 kV. It uses the same cached
@@ -322,6 +337,7 @@ public/                     the website (no build step)
   js/heat-layer.js          Leaflet canvas layer painting the grid
   js/power-layers.js        power overlays (lines, substations, plants) and their panel
   js/power.js               voltage levels, plant sources, OSM tag parsing
+  js/gem-plants.js          GEM technologies and statuses
   js/grid-lines-codec.js    tile format of the power lines
   js/grid-data.js           grids (datasets and blocks): loading, evaluation
   js/grid-codec.js          compact grid file encoding
@@ -342,6 +358,7 @@ scripts/
   lib/gpkg-lines.mjs        GeoPackage lines and nearest-line distances
   build-grid-lines.mjs      map tiles of the gridfinder network for the power overlay
   build-power.mjs           OpenStreetMap power lines, substations, plants for the power overlay
+  build-gem-plants.mjs      Global Energy Monitor power plants (Excel) for the power overlay
   lib/overpass.mjs          Overpass API queries with retries across public instances
   lib/osm-power.mjs         OpenStreetMap power infrastructure per country (Overpass, cached)
   lib/line-tiles.mjs        cutting lines into map tiles at several levels of detail

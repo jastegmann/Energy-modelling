@@ -6,4 +6,5 @@ cache/
 public/data/grids/
 public/data/gridlines/
 public/data/osm-power/
+public/data/gem-plants/
 .DS_Store

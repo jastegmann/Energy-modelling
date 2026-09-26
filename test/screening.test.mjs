@@ -253,3 +253,51 @@ test('build-power writes classed line tiles, substations and plants', async () =
   assert.ok(subs.length > 100 && subs[0][3] === 132 && subs[0][2] === cls('kv132'));
   assert.ok(plants.length > 0 && plants[0][2] === 0 && plants[0][3] === 50);
 });
+
+test('GEM power plants: classification and build-gem-plants', async () => {
+  const { gemTech, gemStatus, GEM_TECHS, GEM_STATUSES } = await import('../public/js/gem-plants.js');
+  const tech = (...a) => GEM_TECHS[gemTech(...a)].id;
+  assert.equal(tech('utility-scale solar', 'PV'), 'solar');
+  assert.equal(tech('utility-scale solar', 'Solar Thermal'), 'csp');
+  assert.equal(tech('oil/gas', 'combined cycle', 'fossil gas: natural gas, fossil liquids: fuel oil'), 'gas');
+  assert.equal(tech('oil/gas', 'internal combustion', 'fossil liquids: heavy fuel oil'), 'oil');
+  assert.equal(tech('oil/gas', 'internal combustion', null), 'oil');
+  assert.equal(tech('', '', '', 'coal'), 'coal'); // single-technology tracker without a type column
+  assert.equal(GEM_STATUSES[gemStatus('cancelled - inferred 4 y')].id, 'cancelled');
+  assert.equal(gemStatus('unknown status'), -1);
+
+  // A small workbook in the Global Integrated Power Tracker layout.
+  const ExcelJS = (await import('exceljs')).default;
+  const wb = new ExcelJS.Workbook();
+  wb.addWorksheet('About').addRow(['Global Integrated Power Tracker (test)']);
+  const ws = wb.addWorksheet('Power facilities');
+  ws.addRow(['Type', 'Country/area', 'Region', 'Plant / Project name', 'Unit / Phase name', 'Capacity (MW)', 'Status', 'Start year', 'Technology', 'Fuel (combustion only)', 'Owner(s)', 'Latitude', 'Longitude', 'Location accuracy', 'GEM location ID', 'GEM unit/phase ID', 'GEM.Wiki URL']);
+  ws.addRow(['oil/gas', 'Kenya', 'Africa', 'Test gas plant', 'GT1', 100, 'operating', 2010, 'gas turbine', 'fossil gas: natural gas', 'Owner A', -1.2, 36.8, 'exact', 'L1', 'G1', 'https://www.gem.wiki/Test']);
+  ws.addRow(['oil/gas', 'Kenya', 'Africa', 'Test gas plant', 'GT2', 150, 'operating', 2012, 'gas turbine', 'fossil gas: natural gas', 'Owner A', -1.2, 36.8, 'exact', 'L1', 'G2', '']);
+  ws.addRow(['oil/gas', 'Kenya', 'Africa', 'Test gas plant', 'GT3', 200, 'announced', null, 'gas turbine', 'fossil gas: natural gas', 'Owner A', -1.2, 36.8, 'exact', 'L1', 'G3', '']);
+  ws.addRow(['utility-scale solar', 'Egypt', 'Africa', 'Test solar', '--', 50, 'construction', 2027, 'PV', null, '', 24.5, 32.9, 'approximate', 'L2', 'G4', '']);
+  ws.addRow(['wind', 'France', 'Europe', 'Not in Africa', '--', 10, 'operating', 2020, 'Onshore', null, '', 45, 2, 'exact', 'L3', 'G5', '']);
+  const xlsx = join(tmp, 'gipt.xlsx');
+  await wb.xlsx.writeFile(xlsx);
+  const out = join(tmp, 'gem');
+  const r = await new Promise((resolve) => {
+    const p = spawn('node', ['scripts/build-gem-plants.mjs', '--file', xlsx, '--file', xlsx, '--out', out], { cwd: ROOT });
+    let o = '';
+    p.stdout.on('data', (d) => (o += d));
+    p.stderr.on('data', (d) => (o += d));
+    p.on('close', (status) => resolve({ status, o }));
+  });
+  assert.equal(r.status, 0, r.o);
+  const index = JSON.parse(readFileSync(join(out, 'index.json'), 'utf8'));
+  assert.equal(index.plants.units, 4); // the second copy of the file adds nothing; France is filtered out
+  const items = JSON.parse(gunzipSync(readFileSync(join(out, 'plants.json.gz'))));
+  assert.equal(items.length, 3); // operating gas (GT1+GT2), announced gas (GT3), solar
+  const gasOp = items.find((x) => x[3] === 0);
+  assert.equal(gasOp[2], GEM_TECHS.findIndex((t) => t.id === 'gas'));
+  assert.equal(gasOp[4], 250);
+  assert.equal(gasOp[7], 2010);
+  assert.equal(gasOp[11].length, 2);
+  const solar = items.find((x) => x[6] === 'Egypt');
+  assert.equal(solar[8], 0); // approximate location
+  assert.equal(GEM_STATUSES[solar[3]].id, 'construction');
+});
