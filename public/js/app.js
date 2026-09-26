@@ -3,9 +3,13 @@
 import { DEFAULT_PARAMS, PARAM_INFO } from './model/losses.js';
 import { FIXED_GCRS, EW_GCRS, TRACKER_GCRS, TRACKER_LIMITS } from './model/configs.js';
 import { loadDatasets, blockResults, blockFilters, cellStages, pickValue } from './grid-data.js';
-import { LAND_COVER, SLOPE_LIMITS, NBINS, DEFAULT_FILTERS, cellAreaKm2 } from './screening-layers.js';
+import { LAND_COVER, SLOPE_LIMITS, NBINS, DEFAULT_FILTERS, cellAreaKm2, txDistance } from './screening-layers.js';
 import { createHeatLayer, HIDDEN } from './heat-layer.js';
-import { loadGridLinesIndex, createGridLinesLayer, createGridLinesToggle } from './grid-lines-layer.js';
+import {
+  loadOverlayIndex, loadJsonGz, createLineLayer, createPointLayer, createPowerPanel,
+  osmLineStyle, gridfinderStyle, substationSymbol, plantSymbol, describeHit,
+} from './power-layers.js';
+import { TX_KV } from './power.js';
 import { VARIABLES, buildLut, cssGradient, niceTicks, autoRange } from './colors.js';
 import { LocationCard, mountLabel } from './location.js';
 import { countryList, collectCells, summaryHtml, toCsv, download } from './screening.js';
@@ -23,10 +27,10 @@ const DEFAULT_STATE = {
   scaleMode: 'fixed',
   opacity: 0.75,
   smooth: false,
-  gridLines: false,
+  power: { lines: false, substations: false, plants: false, gridfinder: false, hidden: new Set(), hiddenSources: new Set(), open: false },
   filters: { ...DEFAULT_FILTERS, landCover: [...DEFAULT_FILTERS.landCover] },
 };
-const SCREEN_VARIABLES = new Set(['suitable', 'grid']);
+const SCREEN_VARIABLES = new Set(['suitable', 'grid', 'tx']);
 const state = structuredClone(DEFAULT_STATE);
 state.params = { ...DEFAULT_PARAMS };
 
@@ -46,9 +50,17 @@ function writeHash() {
   q.set('trk', `${state.tracker.limit},${state.tracker.gcr},${state.tracker.backtrack ? 1 : 0}`);
   q.set('v', state.variable);
   const f = state.filters;
-  q.set('flt', [f.excludeProtected ? 1 : 0, f.landCover.map((x) => (x ? 1 : 0)).join(''), f.maxSlope, f.maxGridKm, f.minSuitable, f.hideFailing ? 1 : 0].join('.'));
+  q.set(
+    'flt',
+    [f.excludeProtected ? 1 : 0, f.landCover.map((x) => (x ? 1 : 0)).join(''), f.maxSlope, f.maxGridKm, f.minSuitable, f.hideFailing ? 1 : 0, f.txTarget === 'sub' ? 1 : 0, f.txKv, f.txMaxKm].join('.')
+  );
   if (state.scaleMode !== 'fixed') q.set('scale', state.scaleMode);
-  if (state.gridLines) q.set('grid', '1');
+  const P = state.power;
+  const pw = ['lines', 'substations', 'plants', 'gridfinder'].map((k) => (P[k] ? 1 : 0)).join('');
+  if (pw !== '0000') q.set('pw', pw);
+  const bits = (set) => [...set].reduce((m, i) => m + 2 ** i, 0).toString(16);
+  if (P.hidden.size) q.set('pwh', bits(P.hidden));
+  if (P.hiddenSources.size) q.set('pws', bits(P.hiddenSources));
   const changed = Object.keys(DEFAULT_PARAMS).filter((k) => state.params[k] !== DEFAULT_PARAMS[k]);
   if (changed.length) q.set('p', changed.map((k) => `${k}:${state.params[k]}`).join(','));
   if (map) {
@@ -82,9 +94,14 @@ function readHash() {
   }
   if (VARIABLES[q.get('v')]) state.variable = q.get('v');
   if (q.get('scale') === 'auto') state.scaleMode = 'auto';
-  state.gridLines = q.get('grid') === '1';
+  const pw = q.get('pw') ?? '';
+  ['lines', 'substations', 'plants', 'gridfinder'].forEach((k, i) => (state.power[k] = pw[i] === '1'));
+  if (q.get('grid') === '1') state.power.gridfinder = true; // older links
+  const unbits = (h) => new Set([...parseInt(h || '0', 16).toString(2)].reverse().flatMap((b, i) => (b === '1' ? [i] : [])));
+  state.power.hidden = unbits(q.get('pwh'));
+  state.power.hiddenSources = unbits(q.get('pws'));
   const flt = (q.get('flt') ?? '').split('.');
-  if (flt.length === 6 && flt[1].length === LAND_COVER.length) {
+  if ((flt.length === 6 || flt.length === 9) && flt[1].length === LAND_COVER.length) {
     state.filters = {
       excludeProtected: flt[0] === '1',
       landCover: [...flt[1]].map((c) => c === '1'),
@@ -92,6 +109,9 @@ function readHash() {
       maxGridKm: Math.max(0, +flt[3] || 0),
       minSuitable: Math.min(100, Math.max(0, +flt[4] || 0)),
       hideFailing: flt[5] === '1',
+      txTarget: flt[6] === '1' ? 'sub' : 'line',
+      txKv: TX_KV.includes(+flt[7]) ? +flt[7] : DEFAULT_FILTERS.txKv,
+      txMaxKm: Math.max(0, +flt[8] || 0),
     };
   }
   for (const kv of (q.get('p') ?? '').split(',').filter(Boolean)) {
@@ -162,11 +182,16 @@ function syncControls() {
   document.querySelectorAll('#flt-lc input').forEach((el) => (el.checked = f.landCover[+el.dataset.lc]));
   $('flt-slope').value = f.maxSlope;
   $('flt-grid').value = f.maxGridKm;
+  $('flt-tx-target').value = f.txTarget;
+  $('flt-tx-kv').value = f.txKv;
+  $('flt-tx-km').value = f.txMaxKm;
   $('flt-min').value = f.minSuitable;
   $('flt-min-out').textContent = `${f.minSuitable}%`;
   $('flt-hide').checked = f.hideFailing;
   const nLc = f.landCover.filter(Boolean).length;
-  $('flt-summary').textContent = `· ${f.excludeProtected ? 'no protected areas, ' : ''}${nLc}/${LAND_COVER.length} land covers, slope ≤ ${f.maxSlope ? `${f.maxSlope}°` : 'any'}${f.maxGridKm ? `, grid ≤ ${f.maxGridKm} km` : ''}`;
+  $('flt-summary').textContent = `· ${f.excludeProtected ? 'no protected areas, ' : ''}${nLc}/${LAND_COVER.length} land covers, slope ≤ ${f.maxSlope ? `${f.maxSlope}°` : 'any'}${f.maxGridKm ? `, grid ≤ ${f.maxGridKm} km` : ''}${
+    f.txMaxKm ? `, ≥ ${f.txKv} kV ${f.txTarget === 'sub' ? 'substation' : 'line'} ≤ ${f.txMaxKm} km` : ''
+  }`;
   document.querySelectorAll('[data-param]').forEach((el) => {
     if (document.activeElement !== el) el.value = state.params[el.dataset.param];
   });
@@ -229,11 +254,17 @@ $('flt-lc').addEventListener('change', (e) => {
 });
 $('flt-slope').addEventListener('change', (e) => ((state.filters.maxSlope = +e.target.value), changed()));
 $('flt-grid').addEventListener('change', (e) => ((state.filters.maxGridKm = +e.target.value), changed()));
+$('flt-tx-kv').innerHTML = TX_KV.map((kv) => `<option value="${kv}">≥ ${kv} kV</option>`).join('');
+$('flt-tx-target').addEventListener('change', (e) => ((state.filters.txTarget = e.target.value), changed()));
+$('flt-tx-kv').addEventListener('change', (e) => ((state.filters.txKv = +e.target.value), changed()));
+$('flt-tx-km').addEventListener('change', (e) => ((state.filters.txMaxKm = +e.target.value), changed()));
 $('flt-min').addEventListener('input', (e) => ((state.filters.minSuitable = +e.target.value), changed()));
 $('flt-hide').addEventListener('change', (e) => ((state.filters.hideFailing = e.target.checked), changed()));
 
 $('reset').addEventListener('click', () => {
+  const { power: overlays } = state; // map overlays are not inputs; keep them
   Object.assign(state, structuredClone(DEFAULT_STATE));
+  state.power = overlays;
   state.params = { ...DEFAULT_PARAMS };
   heat.setOpacity(state.opacity);
   changed();
@@ -256,30 +287,67 @@ map.getPane('heat').style.zIndex = 350;
 map.getPane('heat').classList.add('heat-pane');
 const heat = createHeatLayer(L, { pane: 'heat', opacity: state.opacity }).addTo(map);
 
-// Power-grid overlay (gridfinder), switched on and off in the top-right corner.
-map.createPane('gridlines');
-map.getPane('gridlines').style.zIndex = 380;
-map.getPane('gridlines').style.pointerEvents = 'none';
-loadGridLinesIndex().then((index) => {
-  const layer = index && createGridLinesLayer(L, index, { pane: 'gridlines' });
-  const show = (on) => {
-    state.gridLines = on;
-    if (layer && on) {
-      layer.addTo(map);
-      map.attributionControl.addAttribution(index.attribution);
-    } else if (layer) {
-      layer.remove();
-      map.attributionControl.removeAttribution(index.attribution);
+// Power infrastructure overlays (OpenStreetMap lines, substations, plants;
+// gridfinder lines), switched on and off in the panel in the top-right corner.
+for (const [name, z] of [['power-lines', 380], ['power-points', 390]]) {
+  map.createPane(name);
+  map.getPane(name).style.zIndex = z;
+  map.getPane(name).style.pointerEvents = 'none';
+}
+const OSM_POWER = 'data/osm-power/', GRIDFINDER = 'data/gridlines/';
+const power = { osm: null, gf: null, layers: {}, attributions: new Set() };
+function setAttribution(text, on) {
+  if (!text || on === power.attributions.has(text)) return;
+  if (on) (map.attributionControl.addAttribution(text), power.attributions.add(text));
+  else (map.attributionControl.removeAttribution(text), power.attributions.delete(text));
+}
+async function applyPower(what) {
+  const P = state.power;
+  if (what === 'classes') for (const k of ['lines', 'substations']) power.layers[k]?.redraw();
+  if (what === 'sources') power.layers.plants?.redraw();
+  for (const kind of ['gridfinder', 'lines', 'substations', 'plants']) {
+    const on = P[kind] && !!(kind === 'gridfinder' ? power.gf : power.osm);
+    if (on && !power.layers[kind]) {
+      // Substations and plants are loaded the first time they are switched on.
+      const items = await loadJsonGz(`${OSM_POWER}${power.osm[kind].path}`).catch(() => []);
+      power.layers[kind] ??= createPointLayer(L, items, kind === 'substations' ? substationSymbol(P.hidden) : plantSymbol(P.hiddenSources), { pane: 'power-points' });
     }
+    const layer = power.layers[kind];
+    if (!layer) continue;
+    const wanted = P[kind] && on;
+    if (wanted && !map.hasLayer(layer)) layer.addTo(map);
+    else if (!wanted && map.hasLayer(layer)) layer.remove();
+  }
+  setAttribution(power.osm?.attribution, !!power.osm && (P.lines || P.substations || P.plants));
+  setAttribution(power.gf?.attribution, !!power.gf && P.gridfinder);
+}
+Promise.all([loadOverlayIndex(OSM_POWER), loadOverlayIndex(GRIDFINDER)]).then(([osm, gf]) => {
+  power.osm = osm?.version === 1 ? osm : null;
+  power.gf = gf?.version === 1 ? gf : null;
+  if (power.gf) power.layers.gridfinder = createLineLayer(L, GRIDFINDER, gf.levels, gridfinderStyle, { pane: 'power-lines', zIndex: 1 });
+  if (power.osm) power.layers.lines = createLineLayer(L, OSM_POWER, power.osm.lines.levels, osmLineStyle(state.power.hidden), { pane: 'power-lines', zIndex: 2 });
+  createPowerPanel(L, { osm: power.osm, gridfinder: power.gf }, state.power, (_, what) => {
+    if (what !== 'open') applyPower(what);
     writeHash();
-  };
-  createGridLinesToggle(L, {
-    checked: !!layer && state.gridLines,
-    disabledReason: layer ? '' : 'Power-grid lines have not been built yet (npm run build-grid-lines)',
-    onChange: show,
   }).addTo(map);
-  if (layer && state.gridLines) show(true);
+  applyPower();
 });
+
+/** Hover text for the power feature under the cursor, or ''. */
+function powerHover(lat, lon) {
+  const z = map.getZoom();
+  const on = (k) => power.layers[k] && map.hasLayer(power.layers[k]);
+  for (const [k, kind] of [['plants', 'plant'], ['substations', 'substation']]) {
+    const h = on(k) && power.layers[k].hit(lat, lon, z, 3);
+    if (h) return describeHit(kind, h);
+  }
+  for (const [k, kind] of [['lines', 'line'], ['gridfinder', 'gridfinder']]) {
+    const h = on(k) && power.layers[k].hit(lat, lon, z, 4);
+    if (h) return describeHit(kind, h);
+  }
+  return '';
+}
+
 map.on('moveend', () => {
   writeHash();
   clearTimeout(moveTimer);
@@ -337,6 +405,7 @@ async function refreshMap() {
         for (let i = 0; i < p.block.M; i++) {
           if (state.variable === 'suitable') p.values[i] = fr ? 100 * fr.suitable[i] : NaN;
           else if (state.variable === 'grid') p.values[i] = fr ? fr.gridKm[i] : NaN;
+          else if (state.variable === 'tx') p.values[i] = fr ? fr.txKm[i] : NaN;
           else p.values[i] = pickValue(p.results, state.variable, i);
           if (state.filters.hideFailing && fr && fr.pass[i] === 0) {
             p.hidden ??= new Uint8Array(p.block.M);
@@ -383,7 +452,9 @@ async function refreshMap() {
 
 function renderLegend(meta, mount, used, lacking, screenVar) {
   $('legend').hidden = false;
-  $('legend-title').textContent = `${meta.label} (${meta.unit})`;
+  const f = state.filters;
+  $('legend-title').textContent =
+    state.variable === 'tx' ? `Distance to ${f.txTarget === 'sub' ? 'substation' : 'line'} ≥ ${f.txKv} kV (${meta.unit})` : `${meta.label} (${meta.unit})`;
   $('legend-bar').style.background = cssGradient(meta.ramp);
   const [lo, hi] = range;
   $('legend-ticks').innerHTML = niceTicks(lo, hi, 5)
@@ -407,22 +478,23 @@ function showBanner(html, warn = false) {
 // Hover read-out from the finest grid shown at the cursor.
 let hoverFrame = 0;
 map.on('mousemove', (e) => {
-  if (!shown.length) return;
   cancelAnimationFrame(hoverFrame);
   hoverFrame = requestAnimationFrame(() => {
     const { lat, lng } = e.latlng;
     const lon = ((((lng + 180) % 360) + 360) % 360) - 180;
     const chip = $('hover');
+    const pw = powerHover(lat, lon);
     for (const { ds, values } of shown) {
       const hit = ds.lookup(lat, lon);
       const v = hit && values.get(hit.block.id)?.[hit.pos];
       if (!Number.isFinite(v)) continue;
       const meta = VARIABLES[state.variable];
-      chip.innerHTML = `<b>${v.toLocaleString('en-US', { maximumFractionDigits: meta.digits })}</b> ${meta.unit} &nbsp;<span class="muted">${lat.toFixed(2)}°, ${lon.toFixed(2)}° · ${ds.name}</span>`;
+      chip.innerHTML = `<b>${v.toLocaleString('en-US', { maximumFractionDigits: meta.digits })}</b> ${meta.unit} &nbsp;<span class="muted">${lat.toFixed(2)}°, ${lon.toFixed(2)}° · ${ds.name}</span>${pw ? `<br>${pw}` : ''}`;
       chip.hidden = false;
       return;
     }
-    chip.hidden = true;
+    chip.innerHTML = pw;
+    chip.hidden = !pw;
   });
 });
 map.on('mouseout', () => ($('hover').hidden = true));
@@ -468,6 +540,7 @@ async function screenCell(lat, lon, filters) {
       pass: !!fr.pass[i],
       protected: fr.protected[i],
       gridKm: fr.gridKm[i],
+      tx: sc.hasTx ? TX_KV.map((kv) => ({ kv, line: txDistance(sc, 'line', kv, i), sub: txDistance(sc, 'sub', kv, i) })) : null,
       landCover,
       names: LAND_COVER.map((x) => x.name),
       slope,
@@ -560,8 +633,11 @@ $('scr-out').addEventListener('keydown', (e) => e.key === 'Enter' && e.target.cl
       showBanner('<b>Synthetic demo data.</b> This grid was built from made-up weather, not PVGIS. Run <code>npm run fetch</code> and <code>npm run build-grid</code> for real results.', true);
     }
     const withLayers = datasets.filter((d) => d.screening).map((d) => d.name);
+    const noTx = datasets.filter((d) => d.screening && !d.screening.transmissionDistance).map((d) => d.name);
     $('flt-status').textContent = withLayers.length
-      ? `Screening layers available for the ${withLayers.join(', ')} grid${withLayers.length > 1 ? 's' : ''}.`
+      ? `Screening layers available for the ${withLayers.join(', ')} grid${withLayers.length > 1 ? 's' : ''}.${
+          noTx.length ? ` The ${noTx.join(', ')} layers predate the transmission distances: run "npm run build-screening" again to add them.` : ''
+        }`
       : 'No screening layers built yet: run "npm run build-screening" (see README). Until then the filters have no effect.';
     const list = countryList(datasets);
     countries = new Map(list);
@@ -575,7 +651,7 @@ $('scr-out').addEventListener('keydown', (e) => e.key === 'Enter' && e.target.cl
     if (withLayers.length) {
       $('data-source').insertAdjacentHTML(
         'afterend',
-        '<p class="muted">Screening: protected areas © OpenStreetMap contributors (ODbL); land cover ESA WorldCover 2021 (CC BY 4.0); slope from Copernicus DEM GLO-90; power grid: gridfinder, Arderne et al. 2020 (CC BY 4.0).</p>'
+        '<p class="muted">Screening: protected areas and transmission © OpenStreetMap contributors (ODbL); land cover ESA WorldCover 2021 (CC BY 4.0); slope from Copernicus DEM GLO-90; power grid: gridfinder, Arderne et al. 2020 (CC BY 4.0).</p>'
       );
     }
     await refreshMap();

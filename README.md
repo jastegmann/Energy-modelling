@@ -138,24 +138,45 @@ Notes:
   Defence and Space GmbH 2014–2018, provided under COPERNICUS by the EU and ESA; gridfinder, Arderne et
   al. (2020), Scientific Data 7:19.
 
-### Power-grid overlay
+### Power infrastructure overlays
 
-The gridfinder lines can also be drawn on the map, switched on and off with **Power grid** in the top-right
-corner. Build the map tiles once, after `build-screening` has downloaded `grid.gpkg`:
+The **Power infrastructure** panel in the top-right corner of the map switches these layers on and off:
 
-```bash
-npm run build-grid-lines -- --region africa     # or --countries "Kenya", --bbox=..., --gridfinder path/to/grid.gpkg
-```
+| Layer | Source | Build |
+|---|---|---|
+| Power lines, coloured by voltage level (765 kV … < 5 kV, unknown); cables dashed | OpenStreetMap `power=line / minor_line / cable` | `npm run build-power -- --region africa` |
+| Substations (white squares, border in the voltage colour) | OpenStreetMap `power=substation` | same |
+| Power plants (circles by energy source, area ~ capacity) | OpenStreetMap `power=plant` | same |
+| Predicted medium-voltage grid (thin black lines) | gridfinder `grid.gpkg` | `npm run build-grid-lines -- --region africa` |
 
-This writes `public/data/gridlines/` in three levels of detail: simplified to about 1 km when zoomed out
-(zoom ≤ 6), about 100 m at zoom 7–9, and the full gridfinder geometry from zoom 10. Without these files the
-switch is greyed out. The lines are gridfinder's *predicted* medium-voltage network, not surveyed lines.
+- **Voltage levels:** each level has a tick box in the panel, which also filters substations. The panel
+  lists the km of line and number of substations per level.
+- **Hover:** hovering over a line, substation or plant shows its voltage, name or capacity.
+- **Voltage tag:** OpenStreetMap's `voltage` tag is in volts. Where a line carries several circuits
+  (`400000;132000`), the highest counts. Lines without the tag are shown as "unknown".
+- **Downloads:** `build-power` downloads per country from Overpass (cached in `cache/screening/osm-power/`)
+  and writes `public/data/osm-power/`.
+- **Levels of detail:** zoomed out (≤ 6) only lines of 60 kV and above are drawn, and at zoom 7–9 the
+  lowest-voltage and unmarked minor lines are left out. Substations below 220 kV and plants below
+  100 MW appear as you zoom in.
+- **gridfinder lines:** `build-grid-lines` uses the `grid.gpkg` that `build-screening` downloaded. It
+  writes `public/data/gridlines/`, simplified to ~1 km when zoomed out, ~100 m at zoom 7–9 and at full
+  detail from zoom 10.
+- **Missing files:** a switch whose files have not been built is greyed out.
+
+**Distance to transmission (screening).** `build-screening` also computes, for every cell, the distance to the
+nearest OpenStreetMap line and substation of at least 33, 66, 132, 220 and 330 kV. It uses the same cached
+download, and `--skip-osm-power` skips it. Site screening then has a filter "Max. distance to transmission"
+(line or substation, minimum voltage, km) and a map layer "Distance to transmission". The location card
+lists all these distances, and the CSV export includes the chosen one. Lines and substations without a
+voltage tag do not count here. Screening layers built before this feature need `build-screening` again,
+which reuses the cached land-cover and slope tiles.
 
 ### Hosting
 
 **GitHub Pages:** `.github/workflows/pages.yml` runs the tests and publishes `public/` on every push to
 `main`. First, enable it once under the repository's Settings → Pages → Source: **GitHub Actions**. Then
-build the grids locally, remove `public/data/grids/` (and `public/data/gridlines/`) from `.gitignore`, and commit them. GitHub Pages
+build the grids locally, remove `public/data/grids/` (and `public/data/gridlines/`, `public/data/osm-power/`) from `.gitignore`, and commit them. GitHub Pages
 sites are limited to about 1 GB. The 0.5° world grid, the 0.1° Africa grid and several 0.05° countries fit
 comfortably. A 0.05° grid of all of Africa also fits, but it makes the repository large and slow to push.
 
@@ -299,8 +320,9 @@ public/                     the website (no build step)
   index.html, css/app.css
   js/app.js                 UI wiring, map, URL state
   js/heat-layer.js          Leaflet canvas layer painting the grid
-  js/grid-lines-layer.js    power-grid overlay and its on/off switch
-  js/grid-lines-codec.js    tile format of the power-grid lines
+  js/power-layers.js        power overlays (lines, substations, plants) and their panel
+  js/power.js               voltage levels, plant sources, OSM tag parsing
+  js/grid-lines-codec.js    tile format of the power lines
   js/grid-data.js           grids (datasets and blocks): loading, evaluation
   js/grid-codec.js          compact grid file encoding
   js/location.js            location card (live hourly simulation)
@@ -318,7 +340,11 @@ scripts/
   lib/raster.mjs            windowed reads of cloud-optimised GeoTIFFs
   lib/osm-protected.mjs     OpenStreetMap protected areas via Overpass
   lib/gpkg-lines.mjs        GeoPackage lines and nearest-line distances
-  build-grid-lines.mjs      map tiles of the gridfinder network for the power-grid overlay
+  build-grid-lines.mjs      map tiles of the gridfinder network for the power overlay
+  build-power.mjs           OpenStreetMap power lines, substations, plants for the power overlay
+  lib/overpass.mjs          Overpass API queries with retries across public instances
+  lib/osm-power.mjs         OpenStreetMap power infrastructure per country (Overpass, cached)
+  lib/line-tiles.mjs        cutting lines into map tiles at several levels of detail
   lib/lines.mjs             polyline simplification and clipping
   dev/mock-pvgis.mjs        mock PVGIS server with SYNTHETIC data (tests, offline development)
   dev/mock-screening-sources.mjs  SYNTHETIC WorldCover/DEM tiles, Overpass and gridfinder stand-ins

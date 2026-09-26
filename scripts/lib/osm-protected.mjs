@@ -4,10 +4,9 @@
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { OVERPASS, OVERPASS_MIRRORS, overpassJson } from './overpass.mjs';
 
-export const OVERPASS = 'https://overpass-api.de/api/interpreter';
-/** Public Overpass instances, tried in turn when one is busy. */
-export const OVERPASS_MIRRORS = [OVERPASS, 'https://overpass.kumi.systems/api/interpreter', 'https://overpass.private.coffee/api/interpreter'];
+export { OVERPASS, OVERPASS_MIRRORS };
 
 export function protectedQuery(iso2) {
   return `[out:json][timeout:300][maxsize:536870912];
@@ -81,48 +80,12 @@ export function overpassToAreas(json) {
   return areas;
 }
 
-/**
- * Protected areas of a country, from the cache or from Overpass. `endpoint` is
- * one URL or a list; on a busy server or an error the next one is tried.
- * Modest timeout/maxsize values get a slot sooner on busy public servers.
- */
+/** Protected areas of a country, from the cache or from Overpass (see overpassJson for `endpoint`). */
 export async function protectedAreas(iso2, { cacheDir, endpoint = OVERPASS_MIRRORS, log = console.log, attempts = 8 } = {}) {
   mkdirSync(cacheDir, { recursive: true });
   const file = join(cacheDir, `${iso2}.json`);
   if (existsSync(file)) return JSON.parse(readFileSync(file, 'utf8'));
-  const endpoints = [endpoint].flat();
-  let lastError;
-  for (let attempt = 0; attempt < attempts; attempt++) {
-    const url = endpoints[attempt % endpoints.length];
-    const host = new URL(url).host;
-    // Move on to the next server quickly; back off once every server has been tried.
-    const last = attempt === attempts - 1;
-    const wait = last ? 0 : (attempt + 1) % endpoints.length ? 5 : Math.min(120, 30 * 2 ** Math.floor(attempt / endpoints.length));
-    const next = last ? 'giving up' : `next try in ${wait} s`;
-    try {
-      const r = await fetch(url, {
-        method: 'POST',
-        headers: { 'content-type': 'application/x-www-form-urlencoded', 'user-agent': 'solar-yield-map (screening layers)' },
-        body: `data=${encodeURIComponent(protectedQuery(iso2))}`,
-        signal: AbortSignal.timeout(420000),
-      });
-      if (r.ok) {
-        const json = await r.json();
-        // Overpass reports a query timeout or memory limit as a remark with HTTP 200.
-        if (json.remark && /runtime error|timed out|out of memory/i.test(json.remark)) throw new Error(json.remark.slice(0, 200));
-        const areas = overpassToAreas(json);
-        writeFileSync(file, JSON.stringify(areas));
-        return areas;
-      }
-      lastError = new Error(`HTTP ${r.status}: ${(await r.text()).replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 160)}`);
-      if (!(r.status === 429 || r.status >= 500)) throw lastError;
-      log(`  Overpass ${host} busy (HTTP ${r.status}) for ${iso2}; ${next}`);
-    } catch (e) {
-      if (e === lastError) throw e;
-      lastError = e;
-      log(`  Overpass ${host} error for ${iso2} (${e.message}); ${next}`);
-    }
-    if (wait) await new Promise((res) => setTimeout(res, wait * 1000));
-  }
-  throw lastError;
+  const areas = overpassToAreas(await overpassJson(protectedQuery(iso2), { endpoint, log, attempts, label: iso2 }));
+  writeFileSync(file, JSON.stringify(areas));
+  return areas;
 }

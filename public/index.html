@@ -36,7 +36,8 @@
             <option value="ghi">Global horizontal irradiation (kWh/m²)</option>
             <option value="opttilt">Optimal tilt (°)</option>
             <option value="suitable">Suitable land after filters (%)</option>
-            <option value="grid">Distance to power grid (km)</option>
+            <option value="grid">Distance to power grid, gridfinder (km)</option>
+            <option value="tx">Distance to transmission, OpenStreetMap (km)</option>
           </select>
         </label>
         <div class="row2">
@@ -128,7 +129,7 @@
               </select>
             </label>
             <label class="field">
-              <span>Max. distance to grid</span>
+              <span>Max. distance to grid (gridfinder)</span>
               <select id="flt-grid">
                 <option value="0">No limit</option>
                 <option value="5">5 km</option>
@@ -138,6 +139,25 @@
                 <option value="100">100 km</option>
               </select>
             </label>
+          </div>
+          <div class="field">
+            <span>Max. distance to transmission (OpenStreetMap)</span>
+            <div class="row3">
+              <select id="flt-tx-target" aria-label="Line or substation">
+                <option value="line">Line</option>
+                <option value="sub">Substation</option>
+              </select>
+              <select id="flt-tx-kv" aria-label="Minimum voltage"></select>
+              <select id="flt-tx-km" aria-label="Maximum distance">
+                <option value="0">No limit</option>
+                <option value="2">2 km</option>
+                <option value="5">5 km</option>
+                <option value="10">10 km</option>
+                <option value="20">20 km</option>
+                <option value="50">50 km</option>
+                <option value="100">100 km</option>
+              </select>
+            </div>
           </div>
           <label class="field">
             <span>Minimum suitable land in a cell <output id="flt-min-out">10%</output></span>

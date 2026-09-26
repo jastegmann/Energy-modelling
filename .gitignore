@@ -5,4 +5,5 @@ cache/
 # the map as a static site (e.g. GitHub Pages).
 public/data/grids/
 public/data/gridlines/
+public/data/osm-power/
 .DS_Store
