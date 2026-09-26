@@ -138,11 +138,24 @@ Notes:
   Defence and Space GmbH 2014–2018, provided under COPERNICUS by the EU and ESA; gridfinder, Arderne et
   al. (2020), Scientific Data 7:19.
 
+### Power-grid overlay
+
+The gridfinder lines can also be drawn on the map, switched on and off with **Power grid** in the top-right
+corner. Build the map tiles once, after `build-screening` has downloaded `grid.gpkg`:
+
+```bash
+npm run build-grid-lines -- --region africa     # or --countries "Kenya", --bbox=..., --gridfinder path/to/grid.gpkg
+```
+
+This writes `public/data/gridlines/` in three levels of detail: simplified to about 1 km when zoomed out
+(zoom ≤ 6), about 100 m at zoom 7–9, and the full gridfinder geometry from zoom 10. Without these files the
+switch is greyed out. The lines are gridfinder's *predicted* medium-voltage network, not surveyed lines.
+
 ### Hosting
 
 **GitHub Pages:** `.github/workflows/pages.yml` runs the tests and publishes `public/` on every push to
 `main`. First, enable it once under the repository's Settings → Pages → Source: **GitHub Actions**. Then
-build the grids locally, remove `public/data/grids/` from `.gitignore`, and commit them. GitHub Pages
+build the grids locally, remove `public/data/grids/` (and `public/data/gridlines/`) from `.gitignore`, and commit them. GitHub Pages
 sites are limited to about 1 GB. The 0.5° world grid, the 0.1° Africa grid and several 0.05° countries fit
 comfortably. A 0.05° grid of all of Africa also fits, but it makes the repository large and slow to push.
 
@@ -286,6 +299,8 @@ public/                     the website (no build step)
   index.html, css/app.css
   js/app.js                 UI wiring, map, URL state
   js/heat-layer.js          Leaflet canvas layer painting the grid
+  js/grid-lines-layer.js    power-grid overlay and its on/off switch
+  js/grid-lines-codec.js    tile format of the power-grid lines
   js/grid-data.js           grids (datasets and blocks): loading, evaluation
   js/grid-codec.js          compact grid file encoding
   js/location.js            location card (live hourly simulation)
@@ -303,6 +318,8 @@ scripts/
   lib/raster.mjs            windowed reads of cloud-optimised GeoTIFFs
   lib/osm-protected.mjs     OpenStreetMap protected areas via Overpass
   lib/gpkg-lines.mjs        GeoPackage lines and nearest-line distances
+  build-grid-lines.mjs      map tiles of the gridfinder network for the power-grid overlay
+  lib/lines.mjs             polyline simplification and clipping
   dev/mock-pvgis.mjs        mock PVGIS server with SYNTHETIC data (tests, offline development)
   dev/mock-screening-sources.mjs  SYNTHETIC WorldCover/DEM tiles, Overpass and gridfinder stand-ins
   dev/make-pvlib-fixtures.py  pvlib reference values for the tests

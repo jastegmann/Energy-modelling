@@ -5,6 +5,7 @@ import { FIXED_GCRS, EW_GCRS, TRACKER_GCRS, TRACKER_LIMITS } from './model/confi
 import { loadDatasets, blockResults, blockFilters, cellStages, pickValue } from './grid-data.js';
 import { LAND_COVER, SLOPE_LIMITS, NBINS, DEFAULT_FILTERS, cellAreaKm2 } from './screening-layers.js';
 import { createHeatLayer, HIDDEN } from './heat-layer.js';
+import { loadGridLinesIndex, createGridLinesLayer, createGridLinesToggle } from './grid-lines-layer.js';
 import { VARIABLES, buildLut, cssGradient, niceTicks, autoRange } from './colors.js';
 import { LocationCard, mountLabel } from './location.js';
 import { countryList, collectCells, summaryHtml, toCsv, download } from './screening.js';
@@ -22,6 +23,7 @@ const DEFAULT_STATE = {
   scaleMode: 'fixed',
   opacity: 0.75,
   smooth: false,
+  gridLines: false,
   filters: { ...DEFAULT_FILTERS, landCover: [...DEFAULT_FILTERS.landCover] },
 };
 const SCREEN_VARIABLES = new Set(['suitable', 'grid']);
@@ -46,6 +48,7 @@ function writeHash() {
   const f = state.filters;
   q.set('flt', [f.excludeProtected ? 1 : 0, f.landCover.map((x) => (x ? 1 : 0)).join(''), f.maxSlope, f.maxGridKm, f.minSuitable, f.hideFailing ? 1 : 0].join('.'));
   if (state.scaleMode !== 'fixed') q.set('scale', state.scaleMode);
+  if (state.gridLines) q.set('grid', '1');
   const changed = Object.keys(DEFAULT_PARAMS).filter((k) => state.params[k] !== DEFAULT_PARAMS[k]);
   if (changed.length) q.set('p', changed.map((k) => `${k}:${state.params[k]}`).join(','));
   if (map) {
@@ -79,6 +82,7 @@ function readHash() {
   }
   if (VARIABLES[q.get('v')]) state.variable = q.get('v');
   if (q.get('scale') === 'auto') state.scaleMode = 'auto';
+  state.gridLines = q.get('grid') === '1';
   const flt = (q.get('flt') ?? '').split('.');
   if (flt.length === 6 && flt[1].length === LAND_COVER.length) {
     state.filters = {
@@ -251,6 +255,31 @@ map.createPane('heat');
 map.getPane('heat').style.zIndex = 350;
 map.getPane('heat').classList.add('heat-pane');
 const heat = createHeatLayer(L, { pane: 'heat', opacity: state.opacity }).addTo(map);
+
+// Power-grid overlay (gridfinder), switched on and off in the top-right corner.
+map.createPane('gridlines');
+map.getPane('gridlines').style.zIndex = 380;
+map.getPane('gridlines').style.pointerEvents = 'none';
+loadGridLinesIndex().then((index) => {
+  const layer = index && createGridLinesLayer(L, index, { pane: 'gridlines' });
+  const show = (on) => {
+    state.gridLines = on;
+    if (layer && on) {
+      layer.addTo(map);
+      map.attributionControl.addAttribution(index.attribution);
+    } else if (layer) {
+      layer.remove();
+      map.attributionControl.removeAttribution(index.attribution);
+    }
+    writeHash();
+  };
+  createGridLinesToggle(L, {
+    checked: !!layer && state.gridLines,
+    disabledReason: layer ? '' : 'Power-grid lines have not been built yet (npm run build-grid-lines)',
+    onChange: show,
+  }).addTo(map);
+  if (layer && state.gridLines) show(true);
+});
 map.on('moveend', () => {
   writeHash();
   clearTimeout(moveTimer);
