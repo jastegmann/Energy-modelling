@@ -112,11 +112,26 @@ if (!args['skip-protected']) {
   const isos = [...new Set([...countries].map((c) => ISO2[c]).filter(Boolean))].sort();
   const missing = [...countries].filter((c) => !ISO2[c]);
   if (missing.length) log(`No OpenStreetMap country code for ids ${missing.join(', ')}; their protected areas are skipped.`);
+  const endpoint = args.overpass ? args.overpass.split(',').map((u) => u.trim()).filter(Boolean) : osm.OVERPASS_MIRRORS;
+  const failedIsos = [];
   for (const iso of isos) {
     const t0 = Date.now();
-    const list = await osm.protectedAreas(iso, { cacheDir: join(cacheDir, 'osm-protected'), endpoint: args.overpass ?? osm.OVERPASS, log });
-    log(`  protected areas ${iso}: ${list.length} (${((Date.now() - t0) / 1000).toFixed(0)} s)`);
-    areas.push(...list);
+    try {
+      const list = await osm.protectedAreas(iso, { cacheDir: join(cacheDir, 'osm-protected'), endpoint, log });
+      log(`  protected areas ${iso}: ${list.length} (${((Date.now() - t0) / 1000).toFixed(0)} s)`);
+      areas.push(...list);
+    } catch (e) {
+      log(`  protected areas ${iso}: FAILED (${e.message})`);
+      failedIsos.push(iso);
+    }
+  }
+  if (failedIsos.length) {
+    // Tiles are cached, so building them without these countries' protected areas would stick.
+    log(
+      `\nProtected areas could not be downloaded for ${failedIsos.join(', ')} (Overpass busy). The other countries are cached;` +
+        ` run the same command again later to retry only these, or pass --skip-protected to build without protected areas.`
+    );
+    process.exit(1);
   }
   areas = areas.map((a) => {
     let w = Infinity, s = Infinity, e = -Infinity, n = -Infinity;
